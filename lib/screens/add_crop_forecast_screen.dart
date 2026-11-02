@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import '../theme/botanical_theme.dart';
 import '../models/crop_forecast_models.dart';
+import '../algorithms/growth_yield_forecaster.dart';
 
 class AddCropForecastScreen extends StatefulWidget {
-  final VoidCallback? onInitialize;
+  final void Function(CropForecastProfile profile)? onProfileCreated;
 
-  const AddCropForecastScreen({Key? key, this.onInitialize}) : super(key: key);
+  const AddCropForecastScreen({super.key, this.onProfileCreated});
 
   @override
   State<AddCropForecastScreen> createState() => _AddCropForecastScreenState();
@@ -13,494 +15,642 @@ class AddCropForecastScreen extends StatefulWidget {
 
 class _AddCropForecastScreenState extends State<AddCropForecastScreen> {
   CropVariety _selectedVariety = CropVariety.butterheadLettuce;
-  String _selectedChannel = 'NFT Channel 04';
-  int _targetBiomass = 185;
-  int _cycleDurationDays = 28;
-  final TextEditingController _batchController = TextEditingController(text: 'Batch #403 - Spring Foliar');
+  late TextEditingController _batchController;
+  late TextEditingController _channelController;
 
-  final List<NftChannelConfig> _nftChannels = const [
-    NftChannelConfig(id: 'NFT Channel 04', description: 'Active / High Flow', isHighFlow: true),
-    NftChannelConfig(id: 'NFT Channel 08', description: 'Standard Slope Recirc'),
-    NftChannelConfig(id: 'NFT Channel 12', description: 'Low Gradient Bench'),
-    NftChannelConfig(id: 'NFT Channel 16', description: 'Nursery Gantry'),
-  ];
+  DateTime _transplantDate = DateTime.now().subtract(const Duration(days: 7));
+  int _currentDay = 7;
+  double _targetBiomass = 185.0;
+  int _cycleDurationDays = 28;
+  int _plantsPerTray = 36;
+
+  // Environmental Telemetry
+  double _ambientTemp = 21.5;
+  double _minTemp = 18.0;
+  double _maxTemp = 24.5;
+  double _ec = 1.4;
+  double _ph = 6.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _batchController = TextEditingController(text: 'Batch #501 - Spring Hydro');
+    _channelController = TextEditingController(text: 'NFT Channel 04 · Bay A');
+    _applyVarietyDefaults(_selectedVariety);
+  }
+
+  void _applyVarietyDefaults(CropVariety variety) {
+    setState(() {
+      _selectedVariety = variety;
+      switch (variety) {
+        case CropVariety.butterheadLettuce:
+          _targetBiomass = 185.0;
+          _cycleDurationDays = 28;
+          _ec = 1.4;
+          _ph = 6.0;
+          _ambientTemp = 21.0;
+          break;
+        case CropVariety.spinach:
+          _targetBiomass = 150.0;
+          _cycleDurationDays = 24;
+          _ec = 1.6;
+          _ph = 6.2;
+          _ambientTemp = 19.0;
+          break;
+        case CropVariety.bokChoy:
+          _targetBiomass = 235.0;
+          _cycleDurationDays = 30;
+          _ec = 1.8;
+          _ph = 6.4;
+          _ambientTemp = 22.5;
+          break;
+      }
+      if (_currentDay > _cycleDurationDays) {
+        _currentDay = (_cycleDurationDays / 2).round();
+      }
+    });
+  }
 
   @override
   void dispose() {
     _batchController.dispose();
+    _channelController.dispose();
     super.dispose();
+  }
+
+  void _submitAndGenerateForecast() {
+    final forecaster = GrowthYieldForecaster();
+    final profile = forecaster.generateProfile(
+      variety: _selectedVariety,
+      batchName: _batchController.text.trim().isNotEmpty
+          ? _batchController.text.trim()
+          : '${_selectedVariety.displayName} Batch',
+      channelId: _channelController.text.trim().isNotEmpty
+          ? _channelController.text.trim()
+          : 'NFT Channel 01',
+      transplantDate: _transplantDate,
+      currentDay: _currentDay,
+      customCycleDays: _cycleDurationDays,
+      customTargetWeight: _targetBiomass,
+      plantsPerTray: _plantsPerTray,
+      ambientTemp: _ambientTemp,
+      minTemp: _minTemp,
+      maxTemp: _maxTemp,
+      ec: _ec,
+      ph: _ph,
+    );
+
+    forecaster.addForecastProfile(profile);
+    widget.onProfileCreated?.call(profile);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.check_circle_outline, color: BotanicalTheme.accentLime, size: 20),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'AI Growth Model Initialized: ${profile.batchName}',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: BotanicalTheme.primaryContainer,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
+
+    Navigator.of(context).pop(profile);
   }
 
   @override
   Widget build(BuildContext context) {
+    final dateFormat = DateFormat('MMM dd, yyyy');
+    final estimatedHarvest = _transplantDate.add(Duration(days: _cycleDurationDays));
+    final double totalYieldKg = (_targetBiomass * _plantsPerTray) / 1000.0;
+
     return Scaffold(
       backgroundColor: BotanicalTheme.bgSurface,
-      appBar: _buildAppBar(context),
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: BotanicalTheme.primaryDark),
+          onPressed: () => Navigator.of(context).maybePop(),
+        ),
+        title: const Text(
+          'New Crop Forecast',
+          style: TextStyle(
+            fontWeight: FontWeight.w800,
+            fontSize: 18,
+            color: BotanicalTheme.primaryDark,
+          ),
+        ),
+      ),
       body: SingleChildScrollView(
         physics: const BouncingScrollPhysics(),
         padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'New Crop Forecast',
-              style: TextStyle(
-                fontSize: 26,
-                fontWeight: FontWeight.w800,
-                color: BotanicalTheme.primaryDark,
-                letterSpacing: -0.5,
+            // Header Intro
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: BotanicalTheme.borderSubtle),
+              ),
+              child: const Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: BotanicalTheme.selectedBg,
+                    child: Icon(Icons.auto_graph, color: BotanicalTheme.accentGreen, size: 20),
+                  ),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Growth & Yield Forecasting Pipeline',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                            color: BotanicalTheme.primaryDark,
+                          ),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          'Combines GDD thermal metrics, crop age (DAT), and EC/pH stability into the XGBoost regressor.',
+                          style: TextStyle(fontSize: 11, color: BotanicalTheme.textMuted),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 6),
-            const Text(
-              'Configure agronomic baseline profile and AI telemetry link to generate precision yield curves.',
-              style: TextStyle(
-                fontSize: 14,
-                color: BotanicalTheme.textMuted,
-                height: 1.35,
+            const SizedBox(height: 18),
+
+            // Step 1: Crop Variety Selection
+            _buildSectionHeader('1. CROP VARIETY PROFILE', 'Supported Crops'),
+            const SizedBox(height: 10),
+            Row(
+              children: CropVariety.values.map((v) {
+                final isSelected = v == _selectedVariety;
+                return Expanded(
+                  child: GestureDetector(
+                    onTap: () => _applyVarietyDefaults(v),
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 4),
+                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                      decoration: BoxDecoration(
+                        color: isSelected ? BotanicalTheme.selectedBg : Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: isSelected ? BotanicalTheme.accentGreen : BotanicalTheme.borderSubtle,
+                          width: isSelected ? 1.8 : 1.0,
+                        ),
+                      ),
+                      child: Column(
+                        children: [
+                          Icon(
+                            v == CropVariety.butterheadLettuce
+                                ? Icons.grass
+                                : (v == CropVariety.bokChoy ? Icons.eco : Icons.energy_savings_leaf),
+                            color: isSelected ? BotanicalTheme.accentGreen : BotanicalTheme.textMuted,
+                            size: 26,
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            v.displayName.replaceAll(' ', '\n'),
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+                              color: isSelected ? BotanicalTheme.primaryDark : BotanicalTheme.textMuted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 20),
+
+            // Step 2: Batch & Hardware Allocation
+            _buildSectionHeader('2. BATCH & INFRASTRUCTURE', 'NFT Channel ID'),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: BotanicalTheme.borderSubtle),
+              ),
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _batchController,
+                    decoration: InputDecoration(
+                      labelText: 'Batch Name / Identifier',
+                      prefixIcon: const Icon(Icons.label_outline, size: 20, color: BotanicalTheme.accentGreen),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _channelController,
+                    decoration: InputDecoration(
+                      labelText: 'NFT Channel / Gantry Designation',
+                      prefixIcon: const Icon(Icons.table_restaurant_outlined, size: 20, color: BotanicalTheme.accentGreen),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // Step 3: Planting Timeline & Current Age
+            _buildSectionHeader('3. CROP AGE & TIMELINE', 'Days After Transplant (DAT)'),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: BotanicalTheme.borderSubtle),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Transplant Date',
+                        style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: BotanicalTheme.primaryDark),
+                      ),
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          side: const BorderSide(color: BotanicalTheme.borderSubtle),
+                        ),
+                        onPressed: () async {
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: _transplantDate,
+                            firstDate: DateTime.now().subtract(const Duration(days: 60)),
+                            lastDate: DateTime.now().add(const Duration(days: 30)),
+                          );
+                          if (picked != null) {
+                            setState(() {
+                              _transplantDate = picked;
+                              final calculatedDays = DateTime.now().difference(picked).inDays;
+                              if (calculatedDays > 0 && calculatedDays <= _cycleDurationDays) {
+                                _currentDay = calculatedDays;
+                              }
+                            });
+                          }
+                        },
+                        icon: const Icon(Icons.calendar_today_outlined, size: 14, color: BotanicalTheme.accentGreen),
+                        label: Text(
+                          dateFormat.format(_transplantDate),
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: BotanicalTheme.primaryDark),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Divider(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Current Crop Age (DAT)',
+                        style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: BotanicalTheme.primaryDark),
+                      ),
+                      Text(
+                        'Day $_currentDay of $_cycleDurationDays',
+                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: BotanicalTheme.accentGreen),
+                      ),
+                    ],
+                  ),
+                  Slider(
+                    value: _currentDay.toDouble().clamp(1.0, _cycleDurationDays.toDouble()),
+                    min: 1.0,
+                    max: _cycleDurationDays.toDouble(),
+                    divisions: _cycleDurationDays - 1,
+                    activeColor: BotanicalTheme.accentGreen,
+                    inactiveColor: BotanicalTheme.surfaceContainer,
+                    onChanged: (val) {
+                      setState(() {
+                        _currentDay = val.round();
+                      });
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // Step 4: Biomass Targets & Cycle Duration
+            _buildSectionHeader('4. HARVEST TARGETS', 'Fresh Weight (g/plant)'),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: BotanicalTheme.borderSubtle),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Target Weight (g/plant)', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                      Text('${_targetBiomass.toInt()} g', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: BotanicalTheme.primaryDark)),
+                    ],
+                  ),
+                  Slider(
+                    value: _targetBiomass.clamp(60.0, 350.0),
+                    min: 60.0,
+                    max: 350.0,
+                    divisions: 58,
+                    activeColor: BotanicalTheme.accentGreen,
+                    inactiveColor: BotanicalTheme.surfaceContainer,
+                    onChanged: (val) => setState(() => _targetBiomass = val),
+                  ),
+                  const Divider(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Total Cycle Days', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                      Text('$_cycleDurationDays Days', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: BotanicalTheme.primaryDark)),
+                    ],
+                  ),
+                  Slider(
+                    value: _cycleDurationDays.toDouble().clamp(18.0, 45.0),
+                    min: 18.0,
+                    max: 45.0,
+                    divisions: 27,
+                    activeColor: BotanicalTheme.accentGreen,
+                    inactiveColor: BotanicalTheme.surfaceContainer,
+                    onChanged: (val) {
+                      setState(() {
+                        _cycleDurationDays = val.round();
+                        if (_currentDay > _cycleDurationDays) _currentDay = _cycleDurationDays;
+                      });
+                    },
+                  ),
+                  const Divider(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Plant Density per Tray', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                      Text('$_plantsPerTray heads', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: BotanicalTheme.primaryDark)),
+                    ],
+                  ),
+                  Slider(
+                    value: _plantsPerTray.toDouble().clamp(12.0, 72.0),
+                    min: 12.0,
+                    max: 72.0,
+                    divisions: 15,
+                    activeColor: BotanicalTheme.accentGreen,
+                    inactiveColor: BotanicalTheme.surfaceContainer,
+                    onChanged: (val) => setState(() => _plantsPerTray = val.round()),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // Step 5: Environmental Telemetry (GDD + EC/pH Matrix)
+            _buildSectionHeader('5. AMBIENT & NUTRITIONAL TELEMETRY', 'GDD & Water Quality'),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: BotanicalTheme.borderSubtle),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.thermostat, size: 18, color: Colors.orange),
+                          SizedBox(width: 6),
+                          Text('Ambient Temperature', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                        ],
+                      ),
+                      Text('${_ambientTemp.toStringAsFixed(1)} °C', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                    ],
+                  ),
+                  Slider(
+                    value: _ambientTemp.clamp(14.0, 30.0),
+                    min: 14.0,
+                    max: 30.0,
+                    divisions: 32,
+                    activeColor: Colors.orange,
+                    inactiveColor: BotanicalTheme.surfaceContainer,
+                    onChanged: (val) => setState(() {
+                      _ambientTemp = val;
+                      _minTemp = (val - 3.5).clamp(10.0, 25.0);
+                      _maxTemp = (val + 3.0).clamp(18.0, 35.0);
+                    }),
+                  ),
+                  const Divider(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.bolt, size: 18, color: BotanicalTheme.tertiaryBlue),
+                          SizedBox(width: 6),
+                          Text('Nutrient Solution EC', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                        ],
+                      ),
+                      Text('${_ec.toStringAsFixed(1)} mS/cm', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                    ],
+                  ),
+                  Slider(
+                    value: _ec.clamp(0.8, 2.8),
+                    min: 0.8,
+                    max: 2.8,
+                    divisions: 20,
+                    activeColor: BotanicalTheme.tertiaryBlue,
+                    inactiveColor: BotanicalTheme.surfaceContainer,
+                    onChanged: (val) => setState(() => _ec = double.parse(val.toStringAsFixed(1))),
+                  ),
+                  const Divider(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.science_outlined, size: 18, color: Colors.purple),
+                          SizedBox(width: 6),
+                          Text('Solution pH', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                        ],
+                      ),
+                      Text(_ph.toStringAsFixed(1), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                    ],
+                  ),
+                  Slider(
+                    value: _ph.clamp(5.0, 7.5),
+                    min: 5.0,
+                    max: 7.5,
+                    divisions: 25,
+                    activeColor: Colors.purple,
+                    inactiveColor: BotanicalTheme.surfaceContainer,
+                    onChanged: (val) => setState(() => _ph = double.parse(val.toStringAsFixed(1))),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // Real-Time Projection Summary
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: BotanicalTheme.primaryContainer,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.batch_prediction_outlined, color: BotanicalTheme.accentLime, size: 18),
+                      SizedBox(width: 8),
+                      Text(
+                        'PROJECTED HARVEST & YIELD',
+                        style: TextStyle(
+                          color: BotanicalTheme.accentLime,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 11,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Estimated Harvest Date',
+                                style: TextStyle(color: Colors.white70, fontSize: 11),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1),
+                            const SizedBox(height: 2),
+                            Text(
+                              dateFormat.format(estimatedHarvest),
+                              style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w800),
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            const Text('Total Tray Yield',
+                                style: TextStyle(color: Colors.white70, fontSize: 11),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1),
+                            const SizedBox(height: 2),
+                            Text(
+                              '${totalYieldKg.toStringAsFixed(2)} kg',
+                              style: const TextStyle(color: BotanicalTheme.accentLime, fontSize: 17, fontWeight: FontWeight.w800),
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 24),
 
-            // Section 1: Variety Selection (NFT only)
-            _buildSectionHeader('1. CROP VARIETY PROFILE', 'Preset Calibrated'),
-            const SizedBox(height: 10),
-            ...CropVariety.values.map((v) => _buildVarietyCard(v)).toList(),
-
-            const SizedBox(height: 24),
-
-            // Section 2: NFT Channel Allocation
-            _buildSectionHeader('2. BATCH & INFRASTRUCTURE', 'Bay 04 · Zone A'),
-            const SizedBox(height: 10),
-            _buildInfrastructureCard(),
-
-            const SizedBox(height: 24),
-
-            // Section 3: Biomass & Cycle
-            _buildSectionHeader('3. BIOMASS & TARGETS', 'Cycle: $_cycleDurationDays Days'),
-            const SizedBox(height: 10),
-            _buildBiomassCard(),
-
-            const SizedBox(height: 24),
-
-            // Section 4: AI Calibration Matrix
-            _buildAiMatrixCard(),
-
-            const SizedBox(height: 28),
-
-            // Action Buttons
+            // Submit Button
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: BotanicalTheme.primaryContainer,
                 elevation: 0,
                 minimumSize: const Size.fromHeight(54),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               ),
-              onPressed: () {
-                if (widget.onInitialize != null) {
-                  widget.onInitialize!();
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('AI Growth Forecast Initialized for ${_selectedVariety.displayName}!'),
-                      backgroundColor: BotanicalTheme.primaryContainer,
-                    ),
-                  );
-                  Navigator.of(context).maybePop();
-                }
-              },
+              onPressed: _submitAndGenerateForecast,
               child: const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(Icons.auto_awesome, color: BotanicalTheme.accentLime, size: 20),
                   SizedBox(width: 8),
-                  Text(
-                    'Initialize AI Growth Forecast',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white,
+                  Flexible(
+                    child: Text(
+                      'Initialize AI Growth Model',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Colors.white),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
                     ),
                   ),
                   SizedBox(width: 8),
-                  Icon(Icons.arrow_forward, color: Colors.white, size: 20),
+                  Icon(Icons.arrow_forward, color: Colors.white, size: 18),
                 ],
               ),
             ),
-            const SizedBox(height: 12),
-            OutlinedButton(
-              style: OutlinedButton.styleFrom(
-                minimumSize: const Size.fromHeight(48),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                side: const BorderSide(color: BotanicalTheme.borderSubtle),
-              ),
-              onPressed: () => Navigator.of(context).maybePop(),
-              child: const Text(
-                'Save as Draft Preset',
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: BotanicalTheme.primaryDark,
-                ),
-              ),
-            ),
-            const SizedBox(height: 32),
+            const SizedBox(height: 28),
           ],
         ),
       ),
     );
   }
 
-  PreferredSizeWidget _buildAppBar(BuildContext context) {
-    return AppBar(
-      leading: IconButton(
-        icon: const Icon(Icons.arrow_back, color: BotanicalTheme.primaryDark),
-        onPressed: () => Navigator.of(context).maybePop(),
-      ),
-      title: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: BotanicalTheme.cardBg,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: BotanicalTheme.borderSubtle),
-        ),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircleAvatar(
-              radius: 3.5,
-              backgroundColor: BotanicalTheme.accentEmerald,
-            ),
-            SizedBox(width: 6),
-            Text(
-              'Cycle Setup · Draft 01',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: BotanicalTheme.primaryDark,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSectionHeader(String title, String badge) {
+  Widget _buildSectionHeader(String title, String subtitle) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.5,
+              color: BotanicalTheme.primaryDark,
+            ),
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+          ),
+        ),
+        const SizedBox(width: 8),
         Text(
-          title,
-          style: const TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            color: BotanicalTheme.textMuted,
-            letterSpacing: 0.6,
-          ),
+          subtitle,
+          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: BotanicalTheme.accentGreen),
         ),
-        Text(
-          badge,
-          style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w700,
-            color: BotanicalTheme.accentGreen,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildVarietyCard(CropVariety variety) {
-    final isSelected = _selectedVariety == variety;
-    return GestureDetector(
-      onTap: () => setState(() {
-        _selectedVariety = variety;
-        if (variety == CropVariety.spinach) {
-          _targetBiomass = 150;
-          _cycleDurationDays = 24;
-        } else if (variety == CropVariety.bokChoy) {
-          _targetBiomass = 230;
-          _cycleDurationDays = 30;
-        } else {
-          _targetBiomass = 185;
-          _cycleDurationDays = 28;
-        }
-      }),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: isSelected ? BotanicalTheme.selectedBg : BotanicalTheme.cardBg,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? BotanicalTheme.primaryContainer : BotanicalTheme.borderSubtle,
-            width: isSelected ? 1.8 : 1.0,
-          ),
-        ),
-        child: Row(
-          children: [
-            Icon(
-              Icons.eco,
-              color: isSelected ? BotanicalTheme.accentGreen : BotanicalTheme.textMuted,
-              size: 22,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    variety.displayName,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 15,
-                      color: BotanicalTheme.primaryDark,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '${variety.botanicalName} · ${variety.baselineMetric}',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: BotanicalTheme.textMuted,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Icon(
-              isSelected ? Icons.check_circle : Icons.radio_button_unchecked,
-              color: isSelected ? BotanicalTheme.primaryContainer : Colors.grey.shade400,
-              size: 22,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildInfrastructureCard() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: BotanicalTheme.cardBg,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: BotanicalTheme.borderSubtle),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextField(
-            controller: _batchController,
-            decoration: InputDecoration(
-              labelText: 'Batch Identifier',
-              labelStyle: const TextStyle(color: BotanicalTheme.textMuted, fontSize: 13),
-              suffixIcon: const Icon(Icons.verified, color: BotanicalTheme.accentGreen, size: 20),
-              filled: true,
-              fillColor: BotanicalTheme.surfaceContainerLow,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: BorderSide.none,
-              ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            ),
-          ),
-          const SizedBox(height: 14),
-          const Text(
-            'Cultivation Subsystem (NFT Dedicated)',
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: BotanicalTheme.textMuted),
-          ),
-          const SizedBox(height: 8),
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            mainAxisSpacing: 8,
-            crossAxisSpacing: 8,
-            childAspectRatio: 2.2,
-            children: _nftChannels.map((ch) => _buildChannelTile(ch)).toList(),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildChannelTile(NftChannelConfig channel) {
-    final isSelected = _selectedChannel == channel.id;
-    return GestureDetector(
-      onTap: () => setState(() => _selectedChannel = channel.id),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: isSelected ? BotanicalTheme.primaryContainer : BotanicalTheme.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              channel.id,
-              style: TextStyle(
-                fontWeight: FontWeight.w700,
-                fontSize: 12,
-                color: isSelected ? BotanicalTheme.accentLime : BotanicalTheme.primaryDark,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              channel.description,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 10,
-                color: isSelected ? Colors.white70 : BotanicalTheme.textMuted,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBiomassCard() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: BotanicalTheme.cardBg,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: BotanicalTheme.borderSubtle),
-      ),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Target Biomass Weight',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 14,
-                      color: BotanicalTheme.primaryDark,
-                    ),
-                  ),
-                  SizedBox(height: 2),
-                  Text(
-                    'Recommended 180–195g for crispness',
-                    style: TextStyle(fontSize: 12, color: BotanicalTheme.textMuted),
-                  ),
-                ],
-              ),
-              Row(
-                children: [
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => setState(() => _targetBiomass = (_targetBiomass - 5).clamp(100, 350)),
-                    icon: const Icon(Icons.remove_circle_outline, color: BotanicalTheme.primaryDark),
-                  ),
-                  Text(
-                    '$_targetBiomass g',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w800,
-                      fontSize: 16,
-                      color: BotanicalTheme.primaryDark,
-                    ),
-                  ),
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => setState(() => _targetBiomass = (_targetBiomass + 5).clamp(100, 350)),
-                    icon: const Icon(Icons.add_circle_outline, color: BotanicalTheme.primaryDark),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text('Vegetative Bench Duration', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-              Text('$_cycleDurationDays Days', style: const TextStyle(fontWeight: FontWeight.w800, color: BotanicalTheme.accentGreen)),
-            ],
-          ),
-          Slider(
-            value: _cycleDurationDays.toDouble(),
-            min: 18,
-            max: 38,
-            divisions: 20,
-            activeColor: BotanicalTheme.accentGreen,
-            inactiveColor: BotanicalTheme.surfaceContainer,
-            onChanged: (val) => setState(() => _cycleDurationDays = val.round()),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAiMatrixCard() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: BotanicalTheme.primaryDark,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.smart_toy, color: BotanicalTheme.accentLime, size: 20),
-                  SizedBox(width: 8),
-                  Text(
-                    'AI Calibration Matrix',
-                    style: TextStyle(color: BotanicalTheme.accentLime, fontWeight: FontWeight.w700, fontSize: 14),
-                  ),
-                ],
-              ),
-              Text(
-                'Ensemble v4.2',
-                style: TextStyle(color: Colors.white70, fontSize: 11),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.08),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _buildMetricCol('Nutrient EC', '${_selectedVariety.defaultEc} mS/cm'),
-                _buildMetricCol('Target pH', '${_selectedVariety.defaultPh} ±0.2'),
-                _buildMetricCol('VPD Target', '0.95 kPa'),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMetricCol(String label, String value) {
-    return Column(
-      children: [
-        Text(label, style: const TextStyle(color: Colors.white60, fontSize: 11)),
-        const SizedBox(height: 4),
-        Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13)),
       ],
     );
   }

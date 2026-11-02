@@ -6,7 +6,7 @@ import '../models/crop_forecast_models.dart';
 import '../algorithms/visual_diagnostic_pipeline.dart';
 
 class DiagnosticsScreen extends StatefulWidget {
-  const DiagnosticsScreen({Key? key}) : super(key: key);
+  const DiagnosticsScreen({super.key});
 
   @override
   State<DiagnosticsScreen> createState() => _DiagnosticsScreenState();
@@ -213,7 +213,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.08),
+            color: Colors.black.withValues(alpha: 0.08),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -238,7 +238,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                         Container(
                           padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.08),
+                            color: Colors.white.withValues(alpha: 0.08),
                             shape: BoxShape.circle,
                           ),
                           child: const Icon(
@@ -280,7 +280,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                 // 3. 6-Stage Progress Overlay during Analysis
                 if (_isAnalyzing)
                   Container(
-                    color: Colors.black.withOpacity(0.82),
+                    color: Colors.black.withValues(alpha: 0.82),
                     padding: const EdgeInsets.symmetric(horizontal: 24),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -749,7 +749,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       decoration: BoxDecoration(
         color: BotanicalTheme.selectedBg,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: BotanicalTheme.accentGreen.withOpacity(0.2)),
+        border: Border.all(color: BotanicalTheme.accentGreen.withValues(alpha: 0.2)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1073,7 +1073,7 @@ class YoloDetectionBoundingBoxPainter extends CustomPainter {
 
       // Subtle translucent box fill
       final fillPaint = Paint()
-        ..color = box.color.withOpacity(0.12)
+        ..color = box.color.withValues(alpha: 0.12)
         ..style = PaintingStyle.fill;
 
       canvas.drawRRect(
