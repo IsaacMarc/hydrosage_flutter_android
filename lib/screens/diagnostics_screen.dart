@@ -820,24 +820,30 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
           border: Border.all(color: BotanicalTheme.borderSubtle),
         ),
         child: const Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Row(
-              children: [
-                Icon(Icons.verified_outlined,
-                    size: 16, color: BotanicalTheme.accentGreen),
-                SizedBox(width: 8),
-                Text(
-                  'Visual Pipeline: 6/6 Computer Vision Stages Executed',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: BotanicalTheme.primaryDark,
+            Expanded(
+              child: Row(
+                children: [
+                  Icon(Icons.verified_outlined,
+                      size: 16, color: BotanicalTheme.accentGreen),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Visual Pipeline: 6/6 CV Stages Executed',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: BotanicalTheme.primaryDark,
+                      ),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
+            SizedBox(width: 8),
             Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   'Audit',
