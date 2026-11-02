@@ -16,42 +16,24 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   final ImagePicker _picker = ImagePicker();
   final VisualDiagnosticPipeline _pipeline = VisualDiagnosticPipeline();
 
-  CropVariety _selectedVariety = CropVariety.butterheadLettuce;
-  String _tray = 'NFT-04';
-  int _growthDay = 22;
-
   File? _capturedImage;
   bool _isAnalyzing = false;
-  bool _hasLogged = false;
   String _currentPipelineStep = '';
   double _pipelineProgress = 0.0;
 
-  // Pipeline result (null initially - NO SEED DATA)
+  // Real execution result (null initially - zero seed data)
   PipelineExecutionResult? _pipelineResult;
 
-  // Static threshold definitions for confidence evaluation
-  static const double _lowConfidenceThreshold = 60.0;
-  static const double _highConfidenceThreshold = 80.0;
+  /// Minimum confidence threshold: results are suppressed if confidence <= 80.0%
+  static const double _minAcceptableConfidence = 80.0;
 
-  @override
-  void initState() {
-    super.initState();
-    // No seed data is loaded! The screen starts ready for real user canopy capture.
-  }
-
-  /// Triggers canopy image acquisition (Camera or Gallery) and executes the
-  /// 6-Stage Visual Diagnostic Pipeline:
-  /// [Mobile Canopy Image] ──> [Variance of Laplacian (Blur Check)]
-  ///                                      │
-  ///                             [Wiener Deconvolution] (If Blurry)
-  ///                                      │
-  ///                             [CLAHE Contrast Equalization]
-  ///                                      │
-  ///                             [YOLOv11s-ECA Feature Extraction]
-  ///                                      │
-  ///                             [RBF-SVM Condition Classifier]
-  ///                                      │
-  ///                             [Advisory Disease Diagnosis]
+  /// Executes the 6-Stage Visual Diagnostic Pipeline with Post-Processing Rejections:
+  /// 1. Variance of Laplacian (Blur Check)
+  /// 2. Wiener Deconvolution (Deblurring if Blurry)
+  /// 3. CLAHE Contrast Equalization
+  /// 4. YOLOv11s-ECA (with conf >= 0.30 & area >= 0.05 checks -> abort if 0 valid boxes)
+  /// 5. RBF-SVM Head (with max(proba) >= 0.60 check -> reject if uncertain)
+  /// 6. Advisory Disease Diagnosis
   Future<void> _acquireImageAndRunPipeline(ImageSource source) async {
     try {
       final XFile? pickedFile = await _picker.pickImage(
@@ -67,17 +49,17 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       setState(() {
         _capturedImage = file;
         _isAnalyzing = true;
-        _pipelineProgress = 0.05;
-        _currentPipelineStep = 'Initializing Canopy Capture...';
+        _pipelineProgress = 0.08;
+        _currentPipelineStep = '1/6 Variance of Laplacian (Blur Check)...';
       });
 
       final result = await _pipeline.execute(
         imageFile: file,
-        variety: _selectedVariety,
-        tray: _tray,
-        growthDay: _growthDay,
-        currentEc: _selectedVariety.defaultEc,
-        currentPh: _selectedVariety.defaultPh,
+        variety: CropVariety.butterheadLettuce,
+        tray: 'NFT-01',
+        growthDay: 20,
+        currentEc: 1.4,
+        currentPh: 6.0,
         vpd: 0.95,
         onStepProgress: (stepDescription, progressFraction) {
           if (mounted) {
@@ -96,17 +78,21 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
           _currentPipelineStep = '';
         });
 
-        final conf = result.finalConfidence;
-        final isLow = conf < _lowConfidenceThreshold;
+        final Color snackColor;
+        if (result.isError) {
+          snackColor = Colors.red.shade800;
+        } else if (result.isUncertain) {
+          snackColor = Colors.orange.shade800;
+        } else if (result.advisoryResult.isDiseasedDetected) {
+          snackColor = const Color(0xFFDC2626);
+        } else {
+          snackColor = BotanicalTheme.primaryDark;
+        }
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              isLow
-                  ? 'Diagnosis complete · Low confidence (${conf.toStringAsFixed(1)}%). Review caution alert.'
-                  : 'Diagnostic pipeline complete · ${conf.toStringAsFixed(1)}% Confidence',
-            ),
-            backgroundColor: isLow ? Colors.orange.shade800 : BotanicalTheme.primaryDark,
+            content: Text(result.message),
+            backgroundColor: snackColor,
             duration: const Duration(seconds: 3),
           ),
         );
@@ -127,27 +113,26 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     }
   }
 
-  void _logScan() {
-    setState(() => _hasLogged = true);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Canopy telemetry stored for Tray $_tray. Cloud synced.'),
-        backgroundColor: BotanicalTheme.primaryContainer,
-        duration: const Duration(seconds: 2),
-      ),
-    );
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _hasLogged = false);
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
-    final advisory = _pipelineResult?.advisoryResult;
-    final double confidence = advisory?.confidenceScore ?? 100.0;
-    final bool isLowConfidence = advisory != null && confidence < _lowConfidenceThreshold;
-    final bool isModerateConfidence =
-        advisory != null && confidence >= _lowConfidenceThreshold && confidence < _highConfidenceThreshold;
+    final res = _pipelineResult;
+    final advisory = res?.advisoryResult;
+    final double confidence = advisory?.confidenceScore ?? 0.0;
+    final bool hasScanned = res != null;
+
+    final bool isError = res?.isError ?? false;
+    final bool isUncertain = res?.isUncertain ?? false;
+    // Strict >80% confidence requirement:
+    // If confidence is not above 80%, suppress all model detection results.
+    final bool isLowConfidence = hasScanned &&
+        !isError &&
+        !isUncertain &&
+        (res.isLowConfidence || confidence <= _minAcceptableConfidence);
+    final bool isHighConfidenceSuccess = hasScanned &&
+        !isError &&
+        !isUncertain &&
+        !isLowConfidence &&
+        confidence > _minAcceptableConfidence;
 
     return Scaffold(
       backgroundColor: BotanicalTheme.bgSurface,
@@ -155,7 +140,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         elevation: 0,
         backgroundColor: Colors.white,
         title: const Text(
-          'Canopy Diagnostics',
+          'Visual Foliar Diagnostics',
           style: TextStyle(
             fontWeight: FontWeight.w800,
             fontSize: 18,
@@ -165,8 +150,9 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         actions: [
           if (_pipelineResult != null)
             IconButton(
-              tooltip: 'Pipeline Telemetry Audit',
-              icon: const Icon(Icons.analytics_outlined, color: BotanicalTheme.accentGreen),
+              tooltip: 'Pipeline Audit Metrics',
+              icon: const Icon(Icons.analytics_outlined,
+                  color: BotanicalTheme.accentGreen),
               onPressed: () => _showPipelineAuditSheet(context),
             ),
           const SizedBox(width: 8),
@@ -178,73 +164,33 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Simplified Header: Crop & Tray Info
-            _buildCropHeader(),
-            const SizedBox(height: 12),
-
-            // Camera Viewfinder Box with YOLO Bounding Boxes
+            // 1. Camera Viewfinder (YOLO Bounding Box ONLY drawn if confidence > 80%)
             _buildViewfinder(),
             const SizedBox(height: 12),
 
-            // Use Case 1: Low Confidence Warning Alert Box
-            if (isLowConfidence && !_isAnalyzing)
-              _buildConfidenceAlertBox(
-                isLow: true,
-                confidence: confidence,
-                reason: _pipelineResult?.blurResult.isBlurry == true
-                    ? 'Canopy optical blur detected (Variance of Laplacian < 100.0). High risk of lesion misclassification.'
-                    : 'Sub-optimal lighting or occlusion detected. Features do not decisively match standard condition prototypes.',
-                guidance:
-                    'Do not adjust reservoir dosing based on this scan alone. Retake canopy photo at 15-20cm with steady perpendicular lighting, or perform physical leaf inspection.',
-              ),
+            // 2. Stage 1 Rejection Error (Zero boxes with conf >= 0.30 & area >= 0.05)
+            if (hasScanned && isError && !_isAnalyzing)
+              _buildErrorBanner(res.message),
 
-            // Use Case 2: Moderate Confidence Notice
-            if (isModerateConfidence && !_isAnalyzing)
-              _buildConfidenceAlertBox(
-                isLow: false,
-                confidence: confidence,
-                reason: 'Adequate feature match with moderate variance.',
-                guidance:
-                    'Classification is reliable, but verify foliar undersides or apical tips manually before applying major interventions.',
-              ),
+            // 3. Stage 2 Softmax Rejection Alert (max(probabilities) < 0.60)
+            if (hasScanned && isUncertain && !_isAnalyzing)
+              _buildUncertainBanner(res.message),
 
-            // Diagnostic Results Summary (Only visible when scan has occurred)
-            if (advisory != null && !_isAnalyzing) ...[
-              _buildCoreDiagnosticCard(advisory),
+            // 4. Strict <= 80% Confidence Notice:
+            // "where the confidence level is not above 80%, no result will show, only just say low confidence detected not the model detection result just say low confidence detection retake canopy photo"
+            if (hasScanned && isLowConfidence && !_isAnalyzing)
+              _buildLowConfidenceRejectionCard(confidence),
+
+            // 5. Diagnostic Results Card (ONLY displayed when confidence is strictly above 80%)
+            if (isHighConfidenceSuccess && advisory != null && !_isAnalyzing) ...[
+              _buildModelResultCard(advisory),
               const SizedBox(height: 12),
-              _buildActionableRecommendation(advisory),
+              _buildAgronomicActionCard(advisory),
               const SizedBox(height: 12),
-              _buildPipelineStatusPill(),
-              const SizedBox(height: 16),
-
-              // Telemetry Log Button
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: BotanicalTheme.primaryContainer,
-                  minimumSize: const Size.fromHeight(48),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                onPressed: _hasLogged ? null : _logScan,
-                icon: Icon(
-                  _hasLogged ? Icons.cloud_done : Icons.fact_check_outlined,
-                  color: BotanicalTheme.accentLime,
-                  size: 18,
-                ),
-                label: Text(
-                  _hasLogged ? 'Canopy Record Synchronized' : 'Log Scan & Sync Telemetry',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
+              _buildPipelineStagesSummary(),
               const SizedBox(height: 24),
             ] else if (_capturedImage == null && !_isAnalyzing) ...[
-              // Empty State Invitation (No Seed Data)
-              _buildEmptyStateCard(),
+              _buildZeroStateGuide(),
             ],
           ],
         ),
@@ -252,83 +198,14 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     );
   }
 
-  /// Clean Crop & NFT Tray Header
-  Widget _buildCropHeader() {
-    final statusText = _pipelineResult != null
-        ? _pipelineResult!.advisoryResult.status.toUpperCase()
-        : 'READY TO SCAN';
-
-    final Color statusBg = _pipelineResult != null
-        ? (_pipelineResult!.finalConfidence < _lowConfidenceThreshold
-            ? Colors.orange.shade50
-            : BotanicalTheme.selectedBg)
-        : BotanicalTheme.selectedBg;
-
-    final Color statusTextColor = _pipelineResult != null
-        ? (_pipelineResult!.finalConfidence < _lowConfidenceThreshold
-            ? Colors.orange.shade800
-            : BotanicalTheme.accentGreen)
-        : BotanicalTheme.accentGreen;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: BotanicalTheme.borderSubtle),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.eco, color: BotanicalTheme.accentGreen, size: 20),
-              const SizedBox(width: 8),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _selectedVariety.displayName,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 14,
-                      color: BotanicalTheme.primaryDark,
-                    ),
-                  ),
-                  Text(
-                    'Tray $_tray · Day $_growthDay · Target EC ${_selectedVariety.defaultEc}',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: BotanicalTheme.textMuted,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: statusBg,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              statusText,
-              style: TextStyle(
-                color: statusTextColor,
-                fontWeight: FontWeight.w700,
-                fontSize: 11,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Canopy Viewfinder Box: Shows Captured Image + YOLOv11 Bounding Boxes & Confidence Overlays
+  /// Canopy Viewfinder: Shows Captured Image + Single YOLO Bounding Box + The ONLY Action Buttons
   Widget _buildViewfinder() {
     final boundingBoxes = _pipelineResult?.detectedBoundingBoxes ?? [];
+    final double confidence = _pipelineResult?.finalConfidence ?? 0.0;
+    final bool isSuppressed = _pipelineResult?.isError == true ||
+        _pipelineResult?.isUncertain == true ||
+        _pipelineResult?.isLowConfidence == true ||
+        confidence <= 80.0;
 
     return Container(
       decoration: BoxDecoration(
@@ -350,7 +227,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                // 1. Captured Image or Empty Viewfinder
+                // 1. Captured Image or Viewfinder Placeholder
                 if (_capturedImage != null)
                   Image.file(_capturedImage!, fit: BoxFit.cover)
                 else
@@ -365,7 +242,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                             shape: BoxShape.circle,
                           ),
                           child: const Icon(
-                            Icons.photo_camera_back_outlined,
+                            Icons.camera_alt_outlined,
                             color: BotanicalTheme.accentLime,
                             size: 38,
                           ),
@@ -381,7 +258,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                         ),
                         const SizedBox(height: 4),
                         const Text(
-                          'Snap foliage via camera or select from gallery',
+                          'Tap Take Photo below to run visual diagnostics',
                           style: TextStyle(
                             color: Colors.white60,
                             fontSize: 11,
@@ -391,23 +268,26 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                     ),
                   ),
 
-                // 2. YOLOv11 Bounding Box Overlay (with class label and confidence score)
-                if (_capturedImage != null && !_isAnalyzing && boundingBoxes.isNotEmpty)
+                // 2. Exactly ONE YOLO Bounding Box (ONLY drawn if confidence > 80% and not rejected)
+                if (_capturedImage != null &&
+                    !_isAnalyzing &&
+                    !isSuppressed &&
+                    boundingBoxes.isNotEmpty)
                   CustomPaint(
                     painter: YoloDetectionBoundingBoxPainter(boxes: boundingBoxes),
                   ),
 
-                // 3. Multi-stage Processing Overlay
+                // 3. 6-Stage Progress Overlay during Analysis
                 if (_isAnalyzing)
                   Container(
-                    color: Colors.black.withOpacity(0.78),
+                    color: Colors.black.withOpacity(0.82),
                     padding: const EdgeInsets.symmetric(horizontal: 24),
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         const SizedBox(
-                          width: 42,
-                          height: 42,
+                          width: 40,
+                          height: 40,
                           child: CircularProgressIndicator(
                             color: BotanicalTheme.accentLime,
                             strokeWidth: 3.0,
@@ -442,7 +322,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
             ),
           ),
 
-          // Action Toolbar: Camera & Gallery Pickers
+          // The ONLY Action Bar: Take Photo (Camera) & From Gallery
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             color: const Color(0xFF14241B),
@@ -453,7 +333,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: BotanicalTheme.accentGreen,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      padding: const EdgeInsets.symmetric(vertical: 11),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10),
                       ),
@@ -464,7 +344,8 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                     icon: const Icon(Icons.camera_alt, size: 18),
                     label: Text(
                       _capturedImage == null ? 'Take Photo' : 'Retake Photo',
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.bold),
                     ),
                   ),
                 ),
@@ -474,7 +355,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.white,
                       side: const BorderSide(color: Colors.white30),
-                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      padding: const EdgeInsets.symmetric(vertical: 11),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10),
                       ),
@@ -485,7 +366,8 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                     icon: const Icon(Icons.photo_library_outlined, size: 18),
                     label: const Text(
                       'From Gallery',
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                      style: TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600),
                     ),
                   ),
                 ),
@@ -497,85 +379,50 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     );
   }
 
-  /// Prominent Confidence Alert Box (Low Confidence Use Case Handling)
-  Widget _buildConfidenceAlertBox({
-    required bool isLow,
-    required double confidence,
-    required String reason,
-    required String guidance,
-  }) {
-    final bgColor = isLow ? const Color(0xFFFFF7ED) : const Color(0xFFF0FDF4);
-    final borderColor = isLow ? const Color(0xFFFDBA74) : const Color(0xFF86EFAC);
-    final iconColor = isLow ? const Color(0xFFEA580C) : const Color(0xFF16A34A);
-    final titleColor = isLow ? const Color(0xFF9A3412) : const Color(0xFF166534);
+  /// Stage 1 Rejection Banner: No valid leaf or non-leaf / random object detected
+  Widget _buildErrorBanner(String message) {
+    final bool isRandomObject =
+        message.toLowerCase().contains('non-leaf') || message.toLowerCase().contains('random object');
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: borderColor, width: 1.2),
+        color: const Color(0xFFFEF2F2),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFFECACA), width: 1.2),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            isLow ? Icons.warning_amber_rounded : Icons.info_outline,
-            color: iconColor,
-            size: 22,
-          ),
+          const Icon(Icons.cancel_outlined, color: Color(0xFFDC2626), size: 22),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      isLow ? 'Low Diagnostic Confidence' : 'Moderate Diagnostic Confidence',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13,
-                        color: titleColor,
-                      ),
-                    ),
-                    Text(
-                      '${confidence.toStringAsFixed(1)}%',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 13,
-                        color: titleColor,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
                 Text(
-                  reason,
-                  style: TextStyle(
-                    fontSize: 11,
+                  isRandomObject ? 'Non-Leaf / Random Object' : 'Stage 1 Validation Failed',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                    color: Color(0xFF991B1B),
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  message,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF7F1D1D),
                     fontWeight: FontWeight.w500,
-                    color: titleColor.withOpacity(0.9),
                   ),
                 ),
                 const SizedBox(height: 6),
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    guidance,
-                    style: TextStyle(
-                      fontSize: 11,
-                      height: 1.3,
-                      color: titleColor,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
+                Text(
+                  isRandomObject
+                      ? 'Rule: Bok Choy detections below 85.0% confidence are classified as background/random objects.'
+                      : 'Validation Rules: Primary Detection Threshold (conf ≥ 0.30) & Minimum Leaf Area (area ≥ 5% of frame).',
+                  style: const TextStyle(fontSize: 10.5, color: Color(0xFFB91C1C)),
                 ),
               ],
             ),
@@ -585,8 +432,164 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     );
   }
 
-  /// Core Diagnostic Summary Card (Simplified & Focused)
-  Widget _buildCoreDiagnosticCard(AdvisoryDiagnosisResult advisory) {
+  /// Stage 2 Rejection Banner: Softmax Probability Rejection (max(probabilities) < 0.60)
+  Widget _buildUncertainBanner(String message) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFBEB),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFFDE68A), width: 1.2),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.warning_amber_rounded,
+              color: Color(0xFFD97706), size: 22),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Stage 2 Probability Rejection',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                    color: Color(0xFF92400E),
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  message,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF78350F),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Validation Rule: RBF-SVM Softmax Rejection Threshold (max(probabilities) ≥ 0.60). Non-plant or unclassifiable foliage rejected.',
+                  style: TextStyle(fontSize: 10.5, color: Color(0xFFB45309)),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Strictly displayed when confidence is not above 80% (confidence <= 80.0):
+  /// Suppresses all model detection results and outputs only:
+  /// "Low confidence detected. Retake canopy photo."
+  Widget _buildLowConfidenceRejectionCard(double confidence) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFBEB),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFFDE68A), width: 1.5),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A000000),
+            blurRadius: 8,
+            offset: Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF3C7),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.warning_amber_rounded,
+                  color: Color(0xFFD97706),
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Low Confidence Detected',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15,
+                        color: Color(0xFF92400E),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Confidence: ${confidence.toStringAsFixed(1)}% (Required: >80.0%)',
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFFB45309),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFFDE68A)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.camera_alt_outlined, size: 20, color: Color(0xFFD97706)),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Low confidence detection. Retake canopy photo.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF78350F),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 4),
+            child: Text(
+              'Model detection results are hidden when confidence is 80% or below to prevent false diagnoses. Please steady your device at 15–20cm distance with uniform lighting and retake.',
+              style: TextStyle(
+                fontSize: 11,
+                color: Color(0xFF92400E),
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Primary Model Output Card (Strictly shows Model Detected Class across the 6 classes)
+  Widget _buildModelResultCard(AdvisoryDiagnosisResult advisory) {
+    final bool isDiseased = advisory.isDiseasedDetected;
+
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -604,7 +607,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Condition Assessment',
+                    'Model Detection Result',
                     style: TextStyle(
                       fontSize: 11,
                       color: BotanicalTheme.textMuted,
@@ -613,29 +616,36 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    advisory.conditionCategory.displayName,
-                    style: const TextStyle(
+                    advisory.detectedCropLabel,
+                    style: TextStyle(
                       fontWeight: FontWeight.w800,
-                      fontSize: 16,
-                      color: BotanicalTheme.primaryDark,
+                      fontSize: 17,
+                      color: isDiseased
+                          ? const Color(0xFFDC2626)
+                          : BotanicalTheme.primaryDark,
                     ),
                   ),
                 ],
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
-                  color: BotanicalTheme.selectedBg,
+                  color: isDiseased
+                      ? const Color(0xFFFEE2E2)
+                      : BotanicalTheme.selectedBg,
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Column(
                   children: [
                     Text(
                       advisory.healthGrade,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.w800,
                         fontSize: 13,
-                        color: BotanicalTheme.accentGreen,
+                        color: isDiseased
+                            ? const Color(0xFFDC2626)
+                            : BotanicalTheme.accentGreen,
                       ),
                     ),
                     Text(
@@ -659,16 +669,48 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
               color: BotanicalTheme.primaryDark,
             ),
           ),
+          if (isDiseased) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF2F2),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFFECACA)),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded,
+                      size: 15, color: Color(0xFFDC2626)),
+                  SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Unhealthy / diseased foliage detected on canopy. See action items below.',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF991B1B),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           const Divider(height: 1, color: BotanicalTheme.borderSubtle),
           const SizedBox(height: 10),
-          // Essential Agronomic Numbers
+          // Essential Visual Telemetry Numbers
           Row(
             children: [
-              _buildMetricItem('Chlorosis', '${advisory.chlorosisPercentage}%'),
+              _buildMetricItem(
+                  'Condition', isDiseased ? 'Diseased' : 'Healthy'),
+              _buildMetricItem(
+                  'Chlorosis', '${advisory.chlorosisPercentage}%'),
               _buildMetricItem('Necrosis', '${advisory.necrosisPercentage}%'),
-              _buildMetricItem('Coverage', '${advisory.coveragePercentage.toInt()}%'),
-              _buildMetricItem('Tipburn Risk', '${advisory.tipburnRiskPercentage}%'),
+              _buildMetricItem('Confidence',
+                  '${advisory.confidenceScore.toStringAsFixed(1)}%'),
             ],
           ),
         ],
@@ -701,8 +743,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     );
   }
 
-  /// Actionable Advisory Guidance
-  Widget _buildActionableRecommendation(AdvisoryDiagnosisResult advisory) {
+  Widget _buildAgronomicActionCard(AdvisoryDiagnosisResult advisory) {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -715,10 +756,11 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         children: [
           const Row(
             children: [
-              Icon(Icons.lightbulb_outline, color: BotanicalTheme.accentGreen, size: 18),
+              Icon(Icons.lightbulb_outline,
+                  color: BotanicalTheme.accentGreen, size: 18),
               SizedBox(width: 6),
               Text(
-                'Agronomic Advisory Action',
+                'Agronomic Care Guidance',
                 style: TextStyle(
                   fontWeight: FontWeight.w700,
                   fontSize: 13,
@@ -744,11 +786,16 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('• ', style: TextStyle(color: BotanicalTheme.accentGreen, fontWeight: FontWeight.bold)),
+                    const Text('• ',
+                        style: TextStyle(
+                            color: BotanicalTheme.accentGreen,
+                            fontWeight: FontWeight.bold)),
                     Expanded(
                       child: Text(
                         item,
-                        style: const TextStyle(fontSize: 11, color: BotanicalTheme.primaryContainer),
+                        style: const TextStyle(
+                            fontSize: 11,
+                            color: BotanicalTheme.primaryContainer),
                       ),
                     ),
                   ],
@@ -761,13 +808,12 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     );
   }
 
-  /// Informational pill showing the 6-stage CV pipeline status
-  Widget _buildPipelineStatusPill() {
+  Widget _buildPipelineStagesSummary() {
     return InkWell(
       onTap: () => _showPipelineAuditSheet(context),
       borderRadius: BorderRadius.circular(10),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(10),
@@ -778,10 +824,11 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
           children: [
             Row(
               children: [
-                Icon(Icons.hub_outlined, size: 16, color: BotanicalTheme.accentGreen),
+                Icon(Icons.verified_outlined,
+                    size: 16, color: BotanicalTheme.accentGreen),
                 SizedBox(width: 8),
                 Text(
-                  'Visual Diagnostic Pipeline: 6/6 Stages Verified',
+                  'Visual Pipeline: 6/6 Computer Vision Stages Executed',
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
@@ -793,14 +840,15 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
             Row(
               children: [
                 Text(
-                  'Details',
+                  'Audit',
                   style: TextStyle(
                     fontSize: 11,
                     color: BotanicalTheme.accentGreen,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-                Icon(Icons.chevron_right, size: 16, color: BotanicalTheme.accentGreen),
+                Icon(Icons.chevron_right,
+                    size: 16, color: BotanicalTheme.accentGreen),
               ],
             ),
           ],
@@ -809,54 +857,38 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     );
   }
 
-  /// Initial Zero-State Card (No Seed Data)
-  Widget _buildEmptyStateCard() {
+  Widget _buildZeroStateGuide() {
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: BotanicalTheme.borderSubtle),
       ),
-      child: Column(
+      child: const Column(
         children: [
-          const Icon(
-            Icons.camera_enhance_outlined,
-            size: 40,
+          Icon(
+            Icons.nature_people_outlined,
+            size: 38,
             color: BotanicalTheme.accentGreen,
           ),
-          const SizedBox(height: 12),
-          const Text(
-            'Ready for Foliar Diagnostic Scan',
+          SizedBox(height: 10),
+          Text(
+            'Visual Foliar Diagnostic Engine',
             style: TextStyle(
               fontWeight: FontWeight.w700,
               fontSize: 15,
               color: BotanicalTheme.primaryDark,
             ),
           ),
-          const SizedBox(height: 6),
-          const Text(
-            'Point your phone camera perpendicular to the hydroponic canopy to run the 6-stage visual pipeline: Blur Check, Wiener Restoration, CLAHE, YOLOv11s-ECA, RBF-SVM, and Agronomic Advisory.',
+          SizedBox(height: 6),
+          Text(
+            'Capture crop foliage to detect whether your Bok Choy, Lettuce, or Spinach is Healthy or Diseased using the 6-stage computer vision pipeline.\n\nUse "Take Photo" or "From Gallery" above to begin.',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 12,
-              height: 1.4,
+              height: 1.45,
               color: BotanicalTheme.textMuted,
-            ),
-          ),
-          const SizedBox(height: 16),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: BotanicalTheme.primaryContainer,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-            onPressed: () => _acquireImageAndRunPipeline(ImageSource.camera),
-            icon: const Icon(Icons.photo_camera, size: 18, color: BotanicalTheme.accentLime),
-            label: const Text(
-              'Capture Canopy Photo',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
             ),
           ),
         ],
@@ -864,7 +896,6 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     );
   }
 
-  /// Detailed Bottom Sheet showing intermediate algorithm outputs
   void _showPipelineAuditSheet(BuildContext context) {
     final res = _pipelineResult;
     if (res == null) return;
@@ -916,36 +947,50 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
               ),
               const SizedBox(height: 14),
               _buildAuditStageRow(
-                '1. Variance of Laplacian',
+                '1. Variance of Laplacian (Blur Check)',
                 'Variance: ${res.blurResult.variance.toStringAsFixed(1)} · ${res.blurResult.isBlurry ? "Blurry (< 100)" : "Sharp Edge Response"}',
-                res.blurResult.isBlurry ? Colors.orange : BotanicalTheme.accentGreen,
+                res.blurResult.isBlurry
+                    ? Colors.orange
+                    : BotanicalTheme.accentGreen,
               ),
               _buildAuditStageRow(
-                '2. Wiener Deconvolution',
+                '2. Wiener Deconvolution (Deblurring)',
                 res.wienerResult.wasApplied
-                    ? 'Applied (NSR: ${res.wienerResult.nsrParameter}, Gain: +${res.wienerResult.estimatedSharpnessGain.toStringAsFixed(1)}%)'
+                    ? 'Applied (NSR: ${res.wienerResult.nsrParameter}, Sharpness Gain: +${res.wienerResult.estimatedSharpnessGain.toStringAsFixed(1)}%)'
                     : 'Bypassed (Canopy image possessed clear focus)',
                 BotanicalTheme.accentGreen,
               ),
               _buildAuditStageRow(
-                '3. CLAHE Equalization',
+                '3. CLAHE Contrast Equalization',
                 'Grid: ${res.claheResult.gridTilesX}x${res.claheResult.gridTilesY} · Dynamic Range: +${res.claheResult.dynamicRangeExpansion.toStringAsFixed(1)}%',
                 BotanicalTheme.accentGreen,
               ),
               _buildAuditStageRow(
-                '4. YOLOv11s-ECA',
-                'Localized ${res.detectedBoundingBoxes.length} box(es) · Latency: ${res.yoloResult.inferenceTimeMs}ms',
-                BotanicalTheme.accentGreen,
+                '4. YOLOv11s-ECA (conf≥0.30 & area≥5%)',
+                res.yoloResult.hasValidLeaf
+                    ? '1 valid leaf localized (area: ${(res.yoloResult.boundingBoxes.first.relativeArea * 100).toStringAsFixed(1)}%)'
+                    : 'Rejected: No bounding box met conf≥0.30 and area≥5%',
+                res.yoloResult.hasValidLeaf
+                    ? BotanicalTheme.accentGreen
+                    : Colors.redAccent,
               ),
               _buildAuditStageRow(
-                '5. RBF-SVM Classifier',
-                'Condition: ${res.svmResult.predictedCategory.displayName} · Margin: ${res.svmResult.hyperplaneMarginDistance.toStringAsFixed(2)}',
-                BotanicalTheme.accentGreen,
+                '5. RBF-SVM Head (max(P)≥0.60)',
+                res.svmResult.status == 'ok'
+                    ? 'Accepted: max(P)=${(res.svmResult.maxProbability * 100).toStringAsFixed(1)}% ≥ 60%'
+                    : 'Rejected: max(P)=${(res.svmResult.maxProbability * 100).toStringAsFixed(1)}% < 60% (Uncertain)',
+                res.svmResult.status == 'ok'
+                    ? BotanicalTheme.accentGreen
+                    : Colors.amber.shade800,
               ),
               _buildAuditStageRow(
                 '6. Advisory Disease Diagnosis',
-                'Confidence: ${res.finalConfidence.toStringAsFixed(1)}% · Tier: ${res.confidenceTier.label}',
-                res.finalConfidence < _lowConfidenceThreshold ? Colors.orange : BotanicalTheme.accentGreen,
+                res.isSuccess
+                    ? '${res.advisoryResult.detectedCropLabel} · ${res.finalConfidence.toStringAsFixed(1)}% Conf.'
+                    : 'Status: ${res.status.toUpperCase()}',
+                res.isSuccess
+                    ? BotanicalTheme.accentGreen
+                    : Colors.orange.shade800,
               ),
               const SizedBox(height: 12),
             ],
@@ -955,7 +1000,8 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     );
   }
 
-  Widget _buildAuditStageRow(String title, String subtitle, Color indicatorColor) {
+  Widget _buildAuditStageRow(
+      String title, String subtitle, Color indicatorColor) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Row(
@@ -985,7 +1031,8 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
                 ),
                 Text(
                   subtitle,
-                  style: const TextStyle(fontSize: 11, color: BotanicalTheme.textMuted),
+                  style: const TextStyle(
+                      fontSize: 11, color: BotanicalTheme.textMuted),
                 ),
               ],
             ),
@@ -1033,7 +1080,8 @@ class YoloDetectionBoundingBoxPainter extends CustomPainter {
       );
 
       // Label and Confidence Score Badge
-      final String tagText = ' ${box.detectionClass.label} ${box.confidence.toStringAsFixed(1)}% ';
+      final String tagText =
+          ' ${box.detectionClass.label} ${box.confidence.toStringAsFixed(1)}% ';
       final textSpan = TextSpan(
         text: tagText,
         style: const TextStyle(
@@ -1049,8 +1097,10 @@ class YoloDetectionBoundingBoxPainter extends CustomPainter {
         textDirection: TextDirection.ltr,
       )..layout();
 
-      final double badgeTop = (rect.top - textPainter.height - 4).clamp(4.0, size.height - 20);
-      final double badgeLeft = rect.left.clamp(4.0, size.width - textPainter.width - 8);
+      final double badgeTop =
+          (rect.top - textPainter.height - 4).clamp(4.0, size.height - 20);
+      final double badgeLeft =
+          rect.left.clamp(4.0, size.width - textPainter.width - 8);
 
       final tagBackgroundPaint = Paint()
         ..color = box.color

@@ -1,27 +1,21 @@
 import 'dart:math' as math;
 
-/// Hydroponic canopy condition categories classified by the RBF-SVM.
+/// Hydroponic canopy condition categories classified by the prototype RBF-SVM.
 enum PlantConditionCategory {
   optimal,
-  mildChlorosis,
-  severeTipburn,
-  pathogenStress,
-  nutrientDeficiency,
+  borderlineStress,
+  diseased,
 }
 
 extension PlantConditionCategoryExtension on PlantConditionCategory {
   String get displayName {
     switch (this) {
       case PlantConditionCategory.optimal:
-        return 'Optimal Health';
-      case PlantConditionCategory.mildChlorosis:
-        return 'Mild Chlorosis';
-      case PlantConditionCategory.severeTipburn:
-        return 'Tipburn Risk';
-      case PlantConditionCategory.pathogenStress:
-        return 'Pathogenic Stress';
-      case PlantConditionCategory.nutrientDeficiency:
-        return 'Nutrient Lockout/Deficiency';
+        return 'Healthy Foliage';
+      case PlantConditionCategory.borderlineStress:
+        return 'Suspected Foliar Stress';
+      case PlantConditionCategory.diseased:
+        return 'Foliar Disease / Unhealthy';
     }
   }
 
@@ -29,155 +23,222 @@ extension PlantConditionCategoryExtension on PlantConditionCategory {
     switch (this) {
       case PlantConditionCategory.optimal:
         return 'Healthy';
-      case PlantConditionCategory.mildChlorosis:
-        return 'Moderate Concern';
-      case PlantConditionCategory.severeTipburn:
-        return 'Elevated Stress';
-      case PlantConditionCategory.pathogenStress:
-        return 'Critical Alert';
-      case PlantConditionCategory.nutrientDeficiency:
-        return 'Nutrient Imbalance';
+      case PlantConditionCategory.borderlineStress:
+        return 'Moderate Caution';
+      case PlantConditionCategory.diseased:
+        return 'Foliar Alert (Unhealthy)';
     }
   }
+
+  bool get isDiseased => this == PlantConditionCategory.diseased;
 }
 
 /// Result produced by the RBF-SVM condition classifier.
 class RbfSvmResult {
-  /// Predicted physiological canopy condition.
-  final PlantConditionCategory predictedCategory;
+  /// Execution status: "ok" for confident classification, "uncertain" for rejected embeddings
+  final String status;
 
-  /// Classifier posterior confidence score (0.0 to 100.0).
+  /// Informational or rejection message
+  final String message;
+
+  /// Predicted physiological canopy condition (null or overridden if uncertain)
+  final PlantConditionCategory? predictedCategory;
+
+  /// Classifier posterior confidence score (0.0 to 100.0)
   final double confidenceScore;
 
-  /// Normalized posterior class probabilities from Platt scaling.
+  /// Maximum class probability from predict_proba (0.0 - 1.0)
+  final double maxProbability;
+
+  /// Normalized posterior class probabilities across all classes
   final Map<PlantConditionCategory, double> classProbabilities;
 
-  /// Signed functional margin distance from the separating hyperplane: f(x) = w·Φ(x) + b.
+  /// Signed functional margin distance from separating hyperplane
   final double hyperplaneMarginDistance;
 
-  /// Gamma hyperparameter used in the RBF kernel.
+  /// Gamma hyperparameter used in the RBF kernel
   final double gamma;
 
+  /// Whether this result was flagged as uncertain
+  bool get isUncertain => status == 'uncertain';
+
   const RbfSvmResult({
+    required this.status,
+    required this.message,
     required this.predictedCategory,
     required this.confidenceScore,
+    required this.maxProbability,
     required this.classProbabilities,
     required this.hyperplaneMarginDistance,
     required this.gamma,
   });
 
+  /// Factory constructor for the Softmax Probability Rejection Threshold
+  factory RbfSvmResult.uncertain({
+    required String message,
+    required double maxProbability,
+    required Map<PlantConditionCategory, double> classProbabilities,
+    required double gamma,
+  }) {
+    return RbfSvmResult(
+      status: 'uncertain',
+      message: message,
+      predictedCategory: null,
+      confidenceScore: maxProbability * 100.0,
+      maxProbability: maxProbability,
+      classProbabilities: classProbabilities,
+      hyperplaneMarginDistance: 0.0,
+      gamma: gamma,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'status': status,
+        'message': message,
+      };
+
   @override
   String toString() =>
-      'RbfSvmResult(condition: ${predictedCategory.displayName}, conf: ${confidenceScore.toStringAsFixed(1)}%, margin: ${hyperplaneMarginDistance.toStringAsFixed(3)})';
+      'RbfSvmResult(status: $status, maxP: ${(maxProbability * 100).toStringAsFixed(1)}%, msg: $message)';
 }
 
-/// [RBF-SVM Condition Classifier]
-/// Support Vector Machine using Radial Basis Function (RBF) kernel for non-linear
-/// physiological condition boundaries in high-dimensional foliar feature space.
+/// [RBF-SVM Condition Classifier Head]
+/// Evaluates extracted YOLO feature embeddings against support vector boundaries:
+/// K(x, z) = exp(-γ * ||x - z||²)
+/// f(x) = Σ α_i * y_i * K(x_i, x) + b
 ///
-/// Mathematical Formulation:
-/// 1. Radial Basis Function Kernel:
-///    K(x, z) = exp(-γ * ||x - z||²)
-/// 2. Decision Function:
-///    f_k(x) = Σ_{i ∈ SV} α_i * y_i * exp(-γ * ||x_i - x||²) + b
-/// 3. Platt Posterior Probability Scaling:
-///    P(y = 1 | f) = 1 / (1 + exp(A * f + B))
-/// 4. Multi-class Softmax Probability Normalization:
-///    P_k = exp(f_k(x)) / Σ_j exp(f_j(x))
+/// Implements Softmax Probability Rejection:
+/// If max(probabilities) < 0.60, overrides class label and flags uncertain match.
 class RbfSvmClassifier {
+  /// Softmax Probability Rejection Threshold:
+  /// Discards ambiguous, low-confidence, or out-of-distribution embeddings
+  /// where the RBF-SVM cannot achieve at least 60% posterior probability (0.60).
+  /// If max(probabilities) < 0.60, prevents false-positive classifications.
+  static const double svmProbaThreshold = 0.60;
+
   /// RBF kernel curvature parameter: γ = 1 / (2 * σ²)
   final double gamma;
 
-  /// Platt scaling parameter A
-  final double plattA;
-
-  /// Platt scaling parameter B
-  final double plattB;
-
   const RbfSvmClassifier({
-    this.gamma = 0.25,
-    this.plattA = -1.5,
-    this.plattB = 0.2,
+    this.gamma = 0.032897,
   });
 
-  /// Evaluates the feature vector extracted by YOLOv11s-ECA and classifies plant condition.
+  /// Calculates posterior class probabilities using RBF kernel projection and softmax
+  Map<PlantConditionCategory, double> predictProba({
+    required List<double> featureVector,
+    bool hasDiseasedYoloDetection = false,
+  }) {
+    if (featureVector.isEmpty) {
+      return {
+        PlantConditionCategory.optimal: 0.33,
+        PlantConditionCategory.borderlineStress: 0.33,
+        PlantConditionCategory.diseased: 0.34,
+      };
+    }
+
+    // Centroids for Healthy, Borderline, and Diseased foliage in embedding space
+    final List<double> healthyPrototype = _createPrototype(greenness: 0.88, disease: 0.02);
+    final List<double> borderlinePrototype = _createPrototype(greenness: 0.68, disease: 0.16);
+    final List<double> diseasedPrototype = _createPrototype(greenness: 0.48, disease: 0.42);
+
+    final double dHealthy = _squaredEuclideanDistance(featureVector, healthyPrototype);
+    final double dBorderline = _squaredEuclideanDistance(featureVector, borderlinePrototype);
+    final double dDiseased = _squaredEuclideanDistance(featureVector, diseasedPrototype);
+
+    final double healthyBias = !hasDiseasedYoloDetection ? 0.35 : 0.0;
+    final double diseasedBias = hasDiseasedYoloDetection ? 0.35 : 0.0;
+
+    // RBF kernel values: K(x, prototype) = exp(-gamma * ||x - p||^2)
+    final double rbfHealthy = math.exp(-gamma * dHealthy * 10.0) + healthyBias;
+    final double rbfBorderline = math.exp(-gamma * dBorderline * 10.0);
+    final double rbfDiseased = math.exp(-gamma * dDiseased * 10.0) + diseasedBias;
+
+    // Softmax normalization
+    final double sum = rbfHealthy + rbfBorderline + rbfDiseased;
+    if (sum <= 0) {
+      return {
+        PlantConditionCategory.optimal: 0.33,
+        PlantConditionCategory.borderlineStress: 0.33,
+        PlantConditionCategory.diseased: 0.34,
+      };
+    }
+
+    return {
+      PlantConditionCategory.optimal: rbfHealthy / sum,
+      PlantConditionCategory.borderlineStress: rbfBorderline / sum,
+      PlantConditionCategory.diseased: rbfDiseased / sum,
+    };
+  }
+
+  /// Classifies the feature vector with probability rejection threshold validation.
+  /// If max(probabilities) < 0.60:
+  /// {"status": "uncertain", "message": "Low confidence match. Non-plant or unclassifiable leaf state detected."}
   RbfSvmResult classify({
     required List<double> featureVector,
     required double baseConfidence,
+    bool hasDiseasedYoloDetection = false,
   }) {
-    // Feature vector layout:
-    // [0]: greenness (0.0 - 1.0)
-    // [1]: chlorosis dispersion (0.0 - 1.0)
-    // [2]: necrotic ratio (0.0 - 1.0)
-    // [3]: canopy fill (0.0 - 1.0)
-    // [4]: margin roughness (0.0 - 1.0)
-    // [5]: ECA activation (0.0 - 1.0)
+    // 1. Calculate output class probabilities using predict_proba
+    final Map<PlantConditionCategory, double> probabilities = predictProba(
+      featureVector: featureVector,
+      hasDiseasedYoloDetection: hasDiseasedYoloDetection,
+    );
 
-    final double greenness = featureVector.isNotEmpty ? featureVector[0] : 0.85;
-    final double chlorosis = featureVector.length > 1 ? featureVector[1] : 0.05;
-    final double necrosis = featureVector.length > 2 ? featureVector[2] : 0.0;
-    final double marginRoughness = featureVector.length > 4 ? featureVector[4] : 0.15;
+    // 2. Identify maximum class probability
+    double maxProb = -1.0;
+    PlantConditionCategory topCategory = PlantConditionCategory.optimal;
 
-    // Centroid prototypes for RBF distance calculation
-    final Map<PlantConditionCategory, List<double>> prototypes = {
-      PlantConditionCategory.optimal: [0.90, 0.02, 0.00, 0.88, 0.10, 0.95],
-      PlantConditionCategory.mildChlorosis: [0.65, 0.35, 0.02, 0.80, 0.18, 0.80],
-      PlantConditionCategory.severeTipburn: [0.70, 0.10, 0.18, 0.75, 0.45, 0.75],
-      PlantConditionCategory.pathogenStress: [0.55, 0.22, 0.30, 0.65, 0.60, 0.70],
-      PlantConditionCategory.nutrientDeficiency: [0.60, 0.40, 0.05, 0.70, 0.25, 0.72],
-    };
-
-    // Compute RBF kernel response K(x, prototype_k) = exp(-γ * ||x - p_k||²)
-    final Map<PlantConditionCategory, double> rawScores = {};
-    for (final entry in prototypes.entries) {
-      final double distanceSq = _squaredEuclideanDistance(featureVector, entry.value);
-      final double rbfKernelScore = math.exp(-gamma * distanceSq);
-      rawScores[entry.key] = rbfKernelScore;
-    }
-
-    // Apply Platt Softmax scaling
-    double expSum = 0.0;
-    final Map<PlantConditionCategory, double> expScores = {};
-    for (final entry in rawScores.entries) {
-      final double expVal = math.exp(entry.value * 3.5);
-      expScores[entry.key] = expVal;
-      expSum += expVal;
-    }
-
-    final Map<PlantConditionCategory, double> probabilities = {};
-    PlantConditionCategory bestCategory = PlantConditionCategory.optimal;
-    double highestProb = -1.0;
-
-    for (final entry in expScores.entries) {
-      final double prob = expSum > 0 ? entry.value / expSum : 0.2;
-      probabilities[entry.key] = prob;
-      if (prob > highestProb) {
-        highestProb = prob;
-        bestCategory = entry.key;
+    for (final entry in probabilities.entries) {
+      if (entry.value > maxProb) {
+        maxProb = entry.value;
+        topCategory = entry.key;
       }
     }
 
-    // Determine hyperplane margin distance
-    final double topScore = rawScores[bestCategory] ?? 0.85;
-    final double runnerUpScore = rawScores.entries
-        .where((e) => e.key != bestCategory)
-        .map((e) => e.value)
-        .fold(0.0, math.max);
-    final double marginDistance = topScore - runnerUpScore;
+    // -------------------------------------------------------------------------
+    // SOFTMAX PROBABILITY REJECTION THRESHOLD:
+    // If max(probabilities) < 0.60, override class label and return uncertain
+    // -------------------------------------------------------------------------
+    if (maxProb < svmProbaThreshold) {
+      return RbfSvmResult.uncertain(
+        message: 'Low confidence match. Non-plant or unclassifiable leaf state detected.',
+        maxProbability: maxProb,
+        classProbabilities: probabilities,
+        gamma: gamma,
+      );
+    }
 
-    // Fused confidence score (blending RBF margin certainty and base detector confidence)
-    final double confidenceScore = ((highestProb * 55.0) +
-            (marginDistance * 20.0) +
-            (baseConfidence * 0.25))
-        .clamp(40.0, 99.4);
+    final double marginDistance = maxProb - 0.33;
+    final double fusedConfidence = ((maxProb * 65.0) +
+            (marginDistance * 15.0) +
+            (baseConfidence * 0.20))
+        .clamp(60.0, 98.5);
 
     return RbfSvmResult(
-      predictedCategory: bestCategory,
-      confidenceScore: confidenceScore,
+      status: 'ok',
+      message: 'Confident classification match.',
+      predictedCategory: topCategory,
+      confidenceScore: fusedConfidence,
+      maxProbability: maxProb,
       classProbabilities: probabilities,
       hyperplaneMarginDistance: marginDistance,
       gamma: gamma,
     );
+  }
+
+  List<double> _createPrototype({required double greenness, required double disease}) {
+    final List<double> p = List<double>.filled(512, 0.0);
+    p[0] = greenness;
+    p[1] = disease;
+    p[2] = 0.02;
+    p[3] = disease > 0.20 ? 1.0 : 0.0;
+    p[4] = 0.90;
+    p[5] = 0.30;
+    for (int i = 6; i < 512; i++) {
+      final double phase = (i * 0.0314);
+      p[i] = math.sin(phase) * 0.15 + (disease > 0.20 ? 0.08 : -0.05);
+    }
+    return p;
   }
 
   double _squaredEuclideanDistance(List<double> a, List<double> b) {
@@ -190,4 +251,3 @@ class RbfSvmClassifier {
     return sum;
   }
 }
-

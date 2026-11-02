@@ -19,7 +19,7 @@ void main() {
 }
 
 class HydroSageApp extends StatelessWidget {
-  const HydroSageApp({Key? key}) : super(key: key);
+  const HydroSageApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -36,7 +36,7 @@ class HydroSageApp extends StatelessWidget {
 }
 
 class MainNavigationShell extends StatefulWidget {
-  const MainNavigationShell({Key? key}) : super(key: key);
+  const MainNavigationShell({super.key});
 
   @override
   State<MainNavigationShell> createState() => _MainNavigationShellState();
@@ -62,10 +62,10 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
           height: 64,
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
           decoration: BoxDecoration(
-            color: BotanicalTheme.bgSurface.withOpacity(0.95),
+            color: BotanicalTheme.bgSurface.withValues(alpha: 0.95),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF0A2E23).withOpacity(0.06),
+                color: const Color(0xFF0A2E23).withValues(alpha: 0.06),
                 blurRadius: 16,
                 offset: const Offset(0, -2),
               ),
@@ -79,8 +79,10 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
             padding: const EdgeInsets.all(4),
             child: Row(
               children: [
-                _buildNavItem(0, Icons.favorite_border, Icons.favorite, 'Diagnostics'),
-                _buildNavItem(1, Icons.show_chart, Icons.ssid_chart, 'Forecasting'),
+                _buildNavItem(
+                    0, Icons.favorite_border, Icons.favorite, 'Diagnostics'),
+                _buildNavItem(
+                    1, Icons.show_chart, Icons.ssid_chart, 'Forecasting'),
               ],
             ),
           ),
@@ -89,7 +91,8 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
     );
   }
 
-  Widget _buildNavItem(int index, IconData outlineIcon, IconData filledIcon, String label) {
+  Widget _buildNavItem(
+      int index, IconData outlineIcon, IconData filledIcon, String label) {
     final isSelected = _currentIndex == index;
     return Expanded(
       child: GestureDetector(
@@ -102,7 +105,7 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
             boxShadow: isSelected
                 ? [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
+                      color: Colors.black.withValues(alpha: 0.05),
                       blurRadius: 4,
                       offset: const Offset(0, 1),
                     ),
@@ -116,7 +119,9 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
               Icon(
                 isSelected ? filledIcon : outlineIcon,
                 size: 19,
-                color: isSelected ? BotanicalTheme.primaryDark : BotanicalTheme.textMuted,
+                color: isSelected
+                    ? BotanicalTheme.primaryDark
+                    : BotanicalTheme.textMuted,
               ),
               const SizedBox(width: 6),
               Text(
@@ -124,7 +129,9 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                  color: isSelected ? BotanicalTheme.primaryDark : BotanicalTheme.textMuted,
+                  color: isSelected
+                      ? BotanicalTheme.primaryDark
+                      : BotanicalTheme.textMuted,
                 ),
               ),
             ],

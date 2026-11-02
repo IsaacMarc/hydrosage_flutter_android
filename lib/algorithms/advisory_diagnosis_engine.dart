@@ -51,6 +51,10 @@ class AdvisoryDiagnosisResult {
   final String status;
   final List<String> actionItems;
   final PlantConditionCategory conditionCategory;
+  final bool isDiseasedDetected;
+  final bool hasFoliageDetected;
+  final FoliarDetectionClass? primaryDetectedClass;
+  final String detectedCropLabel;
 
   const AdvisoryDiagnosisResult({
     required this.overallHealthScore,
@@ -66,9 +70,99 @@ class AdvisoryDiagnosisResult {
     required this.status,
     required this.actionItems,
     required this.conditionCategory,
+    required this.isDiseasedDetected,
+    required this.hasFoliageDetected,
+    required this.primaryDetectedClass,
+    required this.detectedCropLabel,
   });
 
-  /// Converts to standard DiagnosticResult for backward compatibility with app models.
+  /// Factory helper when Stage 1 aborts (no valid leaf detected)
+  factory AdvisoryDiagnosisResult.error({required String message}) {
+    return AdvisoryDiagnosisResult(
+      overallHealthScore: 0,
+      healthGrade: 'Error',
+      confidenceScore: 0.0,
+      confidenceTier: ConfidenceTier.low,
+      botanicalAssessment: message,
+      agronomicRecommendation:
+          'Re-align camera directly over crop leaves and ensure adequate lighting.',
+      chlorosisPercentage: 0.0,
+      necrosisPercentage: 0.0,
+      coveragePercentage: 0.0,
+      tipburnRiskPercentage: 0.0,
+      status: 'error',
+      actionItems: const [
+        'Center the crop leaf within the camera frame.',
+        'Ensure the leaf occupies at least 5% of the total camera viewfinder.',
+      ],
+      conditionCategory: PlantConditionCategory.optimal,
+      isDiseasedDetected: false,
+      hasFoliageDetected: false,
+      primaryDetectedClass: null,
+      detectedCropLabel: 'No Leaf Detected',
+    );
+  }
+
+  /// Factory helper when Stage 2 rejects (max probability < 0.60)
+  factory AdvisoryDiagnosisResult.uncertain({
+    required String message,
+    required double confidence,
+  }) {
+    return AdvisoryDiagnosisResult(
+      overallHealthScore: 0,
+      healthGrade: 'Uncertain',
+      confidenceScore: confidence,
+      confidenceTier: ConfidenceTier.low,
+      botanicalAssessment: message,
+      agronomicRecommendation:
+          'Low confidence match. Non-plant or unclassifiable leaf state detected. Please verify target crop.',
+      chlorosisPercentage: 0.0,
+      necrosisPercentage: 0.0,
+      coveragePercentage: 0.0,
+      tipburnRiskPercentage: 0.0,
+      status: 'uncertain',
+      actionItems: const [
+        'Ensure the camera is focused on a supported crop (Bok Choy, Lettuce, or Spinach).',
+        'Avoid capturing non-plant objects, grow sponge cubes, or hydroponic PVC gutters.',
+        'Clean lens and steady the device to eliminate motion blur.',
+      ],
+      conditionCategory: PlantConditionCategory.optimal,
+      isDiseasedDetected: false,
+      hasFoliageDetected: true,
+      primaryDetectedClass: null,
+      detectedCropLabel: 'Uncertain State',
+    );
+  }
+
+  /// Factory helper when confidence is not above 80%
+  factory AdvisoryDiagnosisResult.lowConfidence({
+    required double confidence,
+    String message = 'Low confidence detection. Retake canopy photo.',
+  }) {
+    return AdvisoryDiagnosisResult(
+      overallHealthScore: 0,
+      healthGrade: 'Low Confidence',
+      confidenceScore: confidence,
+      confidenceTier: ConfidenceTier.low,
+      botanicalAssessment: 'Low confidence detected.',
+      agronomicRecommendation: message,
+      chlorosisPercentage: 0.0,
+      necrosisPercentage: 0.0,
+      coveragePercentage: 0.0,
+      tipburnRiskPercentage: 0.0,
+      status: 'low_confidence',
+      actionItems: const [
+        'Retake canopy photo at 15-20cm distance with steady focus.',
+        'Ensure uniform lighting across the canopy without glare or harsh shadows.',
+      ],
+      conditionCategory: PlantConditionCategory.optimal,
+      isDiseasedDetected: false,
+      hasFoliageDetected: true,
+      primaryDetectedClass: null,
+      detectedCropLabel: 'Low Confidence',
+    );
+  }
+
   DiagnosticResult toDiagnosticResult() {
     return DiagnosticResult(
       overallHealthScore: overallHealthScore,
@@ -86,8 +180,7 @@ class AdvisoryDiagnosisResult {
 }
 
 /// [Advisory Disease Diagnosis]
-/// Expert agronomic decision engine synthesizing multi-stage computer vision outputs
-/// with plant physiology and hydroponic nutrient dynamics.
+/// Synthesizes prototype YOLOv11 detections + RBF-SVM classification + environmental telemetry.
 class AdvisoryDiagnosisEngine {
   const AdvisoryDiagnosisEngine();
 
@@ -104,173 +197,191 @@ class AdvisoryDiagnosisEngine {
     required YoloDetectionResult yoloResult,
     required RbfSvmResult svmResult,
   }) {
-    // Determine confidence tier
-    final double rawConf = svmResult.confidenceScore;
-    // If the image was blurry and had low sharpness, penalize confidence to protect against misdiagnosis
-    double adjustedConfidence = rawConf;
-    if (blurResult.isBlurry && !wienerResult.wasApplied) {
-      adjustedConfidence -= 25.0;
-    } else if (blurResult.isBlurry && wienerResult.wasApplied) {
-      adjustedConfidence -= 8.0; // slight penalty despite restoration
-    }
-    adjustedConfidence = adjustedConfidence.clamp(35.0, 99.4);
+    final bool hasFoliage = yoloResult.hasValidLeaf;
 
-    final ConfidenceTier tier;
-    if (adjustedConfidence >= 80.0) {
-      tier = ConfidenceTier.high;
-    } else if (adjustedConfidence >= 60.0) {
-      tier = ConfidenceTier.moderate;
-    } else {
-      tier = ConfidenceTier.low;
+    // Use actual detector confidence directly
+    final double actualConfidence =
+        hasFoliage ? yoloResult.overallConfidence : 20.0;
+
+    // Strict Confidence Gate: If confidence is not above 80%, do not output model detection result
+    if (!hasFoliage || actualConfidence <= 80.0) {
+      return AdvisoryDiagnosisResult.lowConfidence(confidence: actualConfidence);
     }
 
-    // Health metrics calculations based on condition
-    final condition = svmResult.predictedCategory;
+    final ConfidenceTier tier = actualConfidence >= 88.0
+        ? ConfidenceTier.high
+        : ConfidenceTier.moderate;
+
+    final FoliarDetectionClass? primaryClass = yoloResult.primaryDetectedClass;
+    final bool isBokChoy = primaryClass?.cropFamily == 'Bok Choy' ||
+        primaryClass == FoliarDetectionClass.bokchoy ||
+        primaryClass == FoliarDetectionClass.bokChoyDiseased;
+
+    // Bok Choy 85% Gate: If Bok Choy has confidence < 85%, label as non-leaf or random object
+    if (isBokChoy && actualConfidence < 85.0) {
+      return AdvisoryDiagnosisResult.lowConfidence(
+        confidence: actualConfidence,
+        message: 'Non-leaf or random object detected. Retake canopy photo.',
+      );
+    }
+
+    // Ground Truth from YOLO model detection classes:
+    // Healthy classes: bokchoy (1), lettuce (2), spinach (4) -> isDiseased = false
+    // Diseased classes: Bok-Choy-Diseased (0), Lettuce-Diseased (3), Spinach-Diseased (5) -> isDiseased = true
+    final bool isDiseased = primaryClass != null
+        ? primaryClass.isDiseased
+        : yoloResult.hasDiseasedDetection;
+
+    final PlantConditionCategory condition = isDiseased
+        ? PlantConditionCategory.diseased
+        : (svmResult.predictedCategory == PlantConditionCategory.borderlineStress
+            ? PlantConditionCategory.borderlineStress
+            : PlantConditionCategory.optimal);
+
+    final String cropName = primaryClass?.cropFamily ?? variety.displayName;
+    final String cropLabel = primaryClass != null
+        ? primaryClass.label
+        : (isDiseased ? '$cropName (Diseased)' : '$cropName (Healthy)');
+
     final int healthScore;
     final String healthGrade;
-    final double chlorosis;
-    final double necrosis;
-    final double tipburn;
-    final double coverage = 85.0 + (growthDay * 0.4).clamp(0.0, 12.0);
     final String statusString;
 
-    switch (condition) {
-      case PlantConditionCategory.optimal:
-        healthScore = 96;
-        healthGrade = 'Grade A+';
-        chlorosis = 0.5;
-        necrosis = 0.0;
-        tipburn = 1.0;
-        statusString = 'optimal';
-        break;
-      case PlantConditionCategory.mildChlorosis:
-        healthScore = 82;
-        healthGrade = 'Grade B+';
-        chlorosis = 4.2;
-        necrosis = 0.2;
-        tipburn = 2.5;
-        statusString = 'warning';
-        break;
-      case PlantConditionCategory.severeTipburn:
-        healthScore = 74;
-        healthGrade = 'Grade C';
-        chlorosis = 2.1;
-        necrosis = 1.8;
-        tipburn = 8.6;
-        statusString = 'attention';
-        break;
-      case PlantConditionCategory.pathogenStress:
-        healthScore = 65;
-        healthGrade = 'Grade D';
-        chlorosis = 6.4;
-        necrosis = 4.5;
-        tipburn = 3.2;
-        statusString = 'critical';
-        break;
-      case PlantConditionCategory.nutrientDeficiency:
-        healthScore = 78;
-        healthGrade = 'Grade B-';
-        chlorosis = 5.8;
-        necrosis = 0.8;
-        tipburn = 3.8;
-        statusString = 'warning';
-        break;
+    if (!hasFoliage) {
+      healthScore = 0;
+      healthGrade = 'No Plant';
+      statusString = 'unrecognized';
+    } else if (isDiseased) {
+      final int deduction = ((yoloResult.measuredChlorosis * 2.0) +
+              (yoloResult.measuredNecrosis * 3.5))
+          .round();
+      healthScore = (72 - deduction).clamp(38, 70);
+      healthGrade = 'Grade C (Alert)';
+      statusString = 'diseased';
+    } else if (condition == PlantConditionCategory.borderlineStress) {
+      healthScore =
+          (85 - (yoloResult.measuredChlorosis * 1.5)).round().clamp(75, 87);
+      healthGrade = 'Grade B';
+      statusString = 'warning';
+    } else {
+      // Optimal / Healthy leaf
+      healthScore =
+          (90 + (yoloResult.measuredGreenness * 0.08)).round().clamp(88, 99);
+      healthGrade = 'Grade A+';
+      statusString = 'optimal';
     }
 
+    final double tipburnCalc =
+        ((yoloResult.measuredNecrosis * 1.8) + (vpd > 1.2 ? 3.0 : 0.8))
+            .clamp(0.5, 15.0);
+
     final (assessment, recommendation, actions) = _buildAgronomicAdvice(
+      cropName: cropName,
       variety: variety,
       condition: condition,
+      isDiseased: isDiseased,
+      hasFoliage: hasFoliage,
       currentEc: currentEc,
       currentPh: currentPh,
       vpd: vpd,
       growthDay: growthDay,
       tier: tier,
+      confidence: actualConfidence,
     );
 
     return AdvisoryDiagnosisResult(
       overallHealthScore: healthScore,
       healthGrade: healthGrade,
-      confidenceScore: adjustedConfidence,
+      confidenceScore: actualConfidence,
       confidenceTier: tier,
       botanicalAssessment: assessment,
       agronomicRecommendation: recommendation,
-      chlorosisPercentage: chlorosis,
-      necrosisPercentage: necrosis,
-      coveragePercentage: coverage,
-      tipburnRiskPercentage: tipburn,
+      chlorosisPercentage:
+          double.parse(yoloResult.measuredChlorosis.toStringAsFixed(1)),
+      necrosisPercentage:
+          double.parse(yoloResult.measuredNecrosis.toStringAsFixed(1)),
+      coveragePercentage:
+          double.parse(yoloResult.measuredCoverage.toStringAsFixed(0)),
+      tipburnRiskPercentage: double.parse(tipburnCalc.toStringAsFixed(1)),
       status: statusString,
       actionItems: actions,
       conditionCategory: condition,
+      isDiseasedDetected: isDiseased,
+      hasFoliageDetected: hasFoliage,
+      primaryDetectedClass: primaryClass,
+      detectedCropLabel: cropLabel,
     );
   }
 
   (String, String, List<String>) _buildAgronomicAdvice({
+    required String cropName,
     required CropVariety variety,
     required PlantConditionCategory condition,
+    required bool isDiseased,
+    required bool hasFoliage,
     required double currentEc,
     required double currentPh,
     required double vpd,
     required int growthDay,
     required ConfidenceTier tier,
+    required double confidence,
   }) {
+    if (!hasFoliage) {
+      return (
+        'No recognizable crop foliage detected in the captured image. The image appears to show background surfaces, empty channels, or extreme glare.',
+        'Please position the phone camera directly over the hydroponic canopy at a distance of 15-20cm and recapture.',
+        [
+          'Center the leaf canopy within the viewfinder.',
+          'Ensure adequate ambient lighting without blinding LED glare.',
+        ]
+      );
+    }
+
     if (tier == ConfidenceTier.low) {
       return (
-        'Image quality or optical blur prevents conclusive foliar classification. Canopy exhibits potential ${condition.displayName.toLowerCase()} indicators.',
-        'Caution: Low confidence reading. Do not adjust nutrient dosing without manual physical confirmation or re-scanning with steady lighting.',
+        'Low diagnostic certainty (${confidence.toStringAsFixed(1)}%). Optical blur or uneven lighting prevents confident classification of $cropName foliage.',
+        'Caution: Do not alter nutrient dosing based on this scan alone. Retake canopy photo under steady uniform lighting.',
         [
-          'Retake photo at 15-20cm distance perpendicular to leaf canopy.',
-          'Verify LED grow light does not create intense glare or washouts.',
+          'Hold phone steady perpendicular to canopy at 15-20cm distance.',
+          'Verify grow light doesn\'t cast extreme shadows.',
           'Inspect leaf margins manually for physical signs of browning or curling.',
         ]
       );
     }
 
-    switch (condition) {
-      case PlantConditionCategory.optimal:
-        return (
-          'Healthy turgid foliage with uniform chlorophyll distribution and intact cell turgor. Bounding boxes confirm clean margins without lesions.',
-          'Maintain current solution (Target EC ${variety.defaultEc} mS/cm, pH ${variety.defaultPh}). Foliage is on pace for harvest.',
-          [
-            'Continue scheduled NFT recirculation cycle.',
-            'Monitor ambient VPD within 0.8 - 1.1 kPa band.',
-          ]
-        );
-      case PlantConditionCategory.mildChlorosis:
-        return (
-          'Early interveinal chlorosis observed on younger foliage. Spectral analysis highlights modest chlorophyll pigment attenuation.',
-          'Slight iron (Fe-EDDHA) or nitrogen uptake restriction. Check solution pH (Target: ${variety.defaultPh}) to avoid micronutrient lockout.',
-          [
-            'Calibrate pH sensor and adjust reservoir down to pH ${variety.defaultPh}.',
-            'Verify root aeration and dissolved oxygen (DO > 6.5 mg/L).',
-          ]
-        );
-      case PlantConditionCategory.severeTipburn:
-        return (
-          'Localized calcium deficiency causing apical leaf margin necrosis. High localized transpiration or rapid growth rate exceeds Ca transport.',
-          'Increase horizontal canopy airflow to stimulate transpiration and Ca translocation. Lower EC slightly if exceeding ${variety.defaultEc}.',
-          [
-            'Position oscillating air circulation fan over Tray benches.',
-            'Maintain day/night VPD below 1.2 kPa.',
-          ]
-        );
-      case PlantConditionCategory.pathogenStress:
-        return (
-          'Foliar lesion patterning consistent with fungal spore germination or surface powdery mildew under elevated humidity.',
-          'Immediately isolate affected tray area, sanitize NFT gutters, and purge stagnant moisture to halt pathogenic sporulation.',
-          [
-            'Reduce relative humidity below 65%.',
-            'Apply potassium bicarbonate foliar barrier if approved.',
-          ]
-        );
-      case PlantConditionCategory.nutrientDeficiency:
-        return (
-          'General pale foliar tint and stunted lamina expansion indicating macro-element depletion.',
-          'Rebalance bulk nutrient reservoir. Boost EC by +0.2 mS/cm toward target ${variety.defaultEc}.',
-          [
-            'Dose hydroponic A+B stock solution.',
-            'Flush filter manifold to remove sediment.',
-          ]
-        );
+    if (isDiseased) {
+      return (
+        'Foliar disease or tissue stress detected on $cropName canopy. (Prototype Model: Flags general diseased foliage; specific pathogen classification pending secondary inspection).',
+        'Initiate foliar triage: Check NFT gutter root zone and maintain solution at EC ${variety.defaultEc} mS/cm and pH ${variety.defaultPh}. Isolate affected crops if lesions expand.',
+        [
+          'Inspect leaf undersides and apical growth for fungal spores, powdery film, or necrotic edges.',
+          'Verify root health in NFT channel (check for discoloration or root rot).',
+          'Ensure canopy humidity remains below 70% with active air circulation fans.',
+          'Sanitize pruning tools before working on neighboring NFT trays.',
+        ]
+      );
     }
+
+    if (condition == PlantConditionCategory.borderlineStress) {
+      return (
+        'Canopy exhibits slight foliar stress or minor color variation. Foliage is largely viable but showing early deviation from baseline.',
+        'Monitor tray conditions closely. Verify solution pH (Target: ${variety.defaultPh}) and ensure EC has not drifted above ${variety.defaultEc}.',
+        [
+          'Test reservoir EC & pH calibration.',
+          'Verify dissolved oxygen levels (DO > 6.0 mg/L) in nutrient stream.',
+          'Re-scan in 48 hours to track foliar canopy development.',
+        ]
+      );
+    }
+
+    // Healthy
+    return (
+      'Healthy, vigorous $cropName foliage with uniform cellular structure and clean leaf margins. Zero diseased foliar zones detected.',
+      'Maintain current cultivation regime (Target EC ${variety.defaultEc} mS/cm, pH ${variety.defaultPh}). Foliage is developing normally toward harvest.',
+      [
+        'Continue scheduled NFT recirculation cycle.',
+        'Maintain ambient VPD within the 0.8 - 1.1 kPa optimal growth band.',
+      ]
+    );
   }
 }
