@@ -61,34 +61,6 @@ extension CropVarietyExtension on CropVariety {
   }
 }
 
-class NftChannelConfig {
-  final String id;
-  final String description;
-  final bool isHighFlow;
-
-  const NftChannelConfig({
-    required this.id,
-    required this.description,
-    this.isHighFlow = false,
-  });
-}
-
-class SCurvePoint {
-  final int day;
-  final double predictedWeight;
-  final double confidenceLower;
-  final double confidenceUpper;
-  final double? actualWeight;
-
-  const SCurvePoint({
-    required this.day,
-    required this.predictedWeight,
-    required this.confidenceLower,
-    required this.confidenceUpper,
-    this.actualWeight,
-  });
-}
-
 class DiagnosticResult {
   final int overallHealthScore;
   final String healthGrade;

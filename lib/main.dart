@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'theme/botanical_theme.dart';
 import 'screens/diagnostics_screen.dart';
-import 'screens/forecasting_screen.dart';
-import 'screens/add_crop_forecast_screen.dart';
+import 'screens/almanac_screen.dart';
+import 'screens/recent_scans_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,52 +15,69 @@ void main() {
       systemNavigationBarIconBrightness: Brightness.dark,
     ),
   );
-  runApp(const HydroSageApp());
+  runApp(const LeafifyApp());
 }
 
-class HydroSageApp extends StatelessWidget {
-  const HydroSageApp({super.key});
+class LeafifyApp extends StatelessWidget {
+  const LeafifyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'HydroSage AI',
+      title: 'Leafify',
       debugShowCheckedModeBanner: false,
       theme: BotanicalTheme.themeData,
       home: const MainNavigationShell(),
-      routes: {
-        '/add-crop': (context) => const AddCropForecastScreen(),
-      },
     );
   }
 }
 
+// Backward compatibility alias
+typedef HydroSageApp = LeafifyApp;
+
 class MainNavigationShell extends StatefulWidget {
-  const MainNavigationShell({super.key});
+  final int initialIndex;
+
+  const MainNavigationShell({super.key, this.initialIndex = 1});
 
   @override
   State<MainNavigationShell> createState() => _MainNavigationShellState();
 }
 
 class _MainNavigationShellState extends State<MainNavigationShell> {
-  int _currentIndex = 1; // Default to Forecasting or Diagnostics
+  late int _currentIndex;
 
-  final List<Widget> _screens = const [
-    DiagnosticsScreen(),
-    ForecastingScreen(),
-  ];
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+  }
+
+  void _switchTab(int index) {
+    setState(() {
+      _currentIndex = index;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    final List<Widget> screens = [
+      const DiagnosticsScreen(),
+      const AlmanacScreen(),
+      RecentScansScreen(
+        onSwitchToDiagnostics: () => _switchTab(0),
+      ),
+    ];
+
     return Scaffold(
       body: IndexedStack(
         index: _currentIndex,
-        children: _screens,
+        children: screens,
       ),
       bottomNavigationBar: SafeArea(
         child: Container(
           height: 64,
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           decoration: BoxDecoration(
             color: BotanicalTheme.bgSurface.withValues(alpha: 0.95),
             boxShadow: [
@@ -80,9 +97,11 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
             child: Row(
               children: [
                 _buildNavItem(
-                    0, Icons.favorite_border, Icons.favorite, 'Diagnostics'),
+                    0, Icons.camera_alt_outlined, Icons.camera_alt, 'Diagnose'),
                 _buildNavItem(
-                    1, Icons.show_chart, Icons.ssid_chart, 'Forecasting'),
+                    1, Icons.menu_book_outlined, Icons.menu_book, 'Almanac'),
+                _buildNavItem(
+                    2, Icons.history_outlined, Icons.history, 'History'),
               ],
             ),
           ),
@@ -118,20 +137,20 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
             children: [
               Icon(
                 isSelected ? filledIcon : outlineIcon,
-                size: 19,
+                size: 18,
                 color: isSelected
                     ? BotanicalTheme.primaryDark
                     : BotanicalTheme.textMuted,
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 5),
               Text(
                 label,
                 style: TextStyle(
-                  fontSize: 13,
+                  fontSize: 12,
                   fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
                   color: isSelected
-                      ? BotanicalTheme.primaryDark
-                      : BotanicalTheme.textMuted,
+                    ? BotanicalTheme.primaryDark
+                    : BotanicalTheme.textMuted,
                 ),
               ),
             ],

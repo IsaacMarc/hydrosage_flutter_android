@@ -2,8 +2,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/crop_forecast_models.dart';
 
-class HydroSageAiService {
-  static const String baseUrl = 'https://api.hydrosage.ai'; // In local setup, points to host
+class LeafifyAiService {
+  static const String baseUrl = 'https://api.leafify.ai'; // In local setup, points to host
 
   static Future<DiagnosticResult> runFoliarScan({
     required CropVariety variety,
@@ -64,3 +64,5 @@ class HydroSageAiService {
     );
   }
 }
+
+typedef HydroSageAiService = LeafifyAiService;

@@ -4,6 +4,8 @@ import 'package:image_picker/image_picker.dart';
 import '../theme/botanical_theme.dart';
 import '../models/crop_forecast_models.dart';
 import '../algorithms/visual_diagnostic_pipeline.dart';
+import '../services/scan_history_service.dart';
+import 'recent_scans_screen.dart';
 
 class DiagnosticsScreen extends StatefulWidget {
   const DiagnosticsScreen({super.key});
@@ -78,6 +80,46 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
           _currentPipelineStep = '';
         });
 
+        // Automatically log this scan to ScanHistoryService
+        if (!result.isError) {
+          final advisory = result.advisoryResult;
+          final crop = advisory.detectedCropLabel.isNotEmpty ? advisory.detectedCropLabel : 'Canopy Foliage';
+          final detectedLabel = result.yoloResult.primaryDetectedClass?.label ?? crop;
+          final conditionText = advisory.isDiseasedDetected
+              ? detectedLabel
+              : (result.isLowConfidence ? 'Low Confidence Detection' : 'Healthy $crop');
+
+          ScanHistoryService().addScanRecord(
+            ScanRecord(
+              id: 'scan-${DateTime.now().millisecondsSinceEpoch}',
+              timestamp: DateTime.now(),
+              imagePath: file.path,
+              cropName: crop,
+              condition: conditionText,
+              isDiseased: advisory.isDiseasedDetected,
+              confidenceScore: advisory.confidenceScore,
+              healthScore: advisory.overallHealthScore,
+              healthGrade: advisory.healthGrade,
+              botanicalAssessment: advisory.botanicalAssessment,
+              recommendation: advisory.agronomicRecommendation,
+              chlorosisPercentage: advisory.chlorosisPercentage,
+              necrosisPercentage: advisory.necrosisPercentage,
+              coveragePercentage: advisory.coveragePercentage,
+              tipburnRiskPercentage: advisory.tipburnRiskPercentage,
+              laplacianVariance: result.blurResult.variance,
+              isBlurry: result.blurResult.isBlurry,
+              boundingBoxes: result.yoloResult.boundingBoxes.map((b) => {
+                'label': b.detectionClass.label,
+                'confidence': b.confidence,
+                'left': b.normalizedRect.left,
+                'top': b.normalizedRect.top,
+                'width': b.normalizedRect.width,
+                'height': b.normalizedRect.height,
+              }).toList(),
+            ),
+          );
+        }
+
         final Color snackColor;
         if (result.isError) {
           snackColor = Colors.red.shade800;
@@ -139,15 +181,41 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
       appBar: AppBar(
         elevation: 0,
         backgroundColor: Colors.white,
-        title: const Text(
-          'Visual Foliar Diagnostics',
-          style: TextStyle(
-            fontWeight: FontWeight.w800,
-            fontSize: 18,
-            color: BotanicalTheme.primaryDark,
-          ),
+        title: Row(
+          children: [
+            Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                color: BotanicalTheme.selectedBg,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.eco,
+                  color: BotanicalTheme.accentGreen, size: 18),
+            ),
+            const SizedBox(width: 8),
+            const Text(
+              'Leafify Diagnostics',
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                fontSize: 18,
+                color: BotanicalTheme.primaryDark,
+              ),
+            ),
+          ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Recent Scans History',
+            icon: const Icon(Icons.history_outlined,
+                color: BotanicalTheme.primaryDark),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const RecentScansScreen()),
+              );
+            },
+          ),
           if (_pipelineResult != null)
             IconButton(
               tooltip: 'Pipeline Audit Metrics',

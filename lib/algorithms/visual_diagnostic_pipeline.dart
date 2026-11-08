@@ -59,7 +59,7 @@ class PipelineExecutionResult {
       };
 }
 
-/// Orchestrator for the HydroSage Visual Diagnostic Pipeline:
+/// Orchestrator for the Leafify Visual Diagnostic Pipeline:
 ///
 /// [Mobile Canopy Image] ──> [Variance of Laplacian (Blur Check)]
 ///                                       │
